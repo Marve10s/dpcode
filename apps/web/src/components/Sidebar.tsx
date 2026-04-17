@@ -52,6 +52,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   type DesktopUpdateState,
   type OrchestrationReadModel,
+  PROVIDER_DISPLAY_NAMES,
   ProjectId,
   type ProviderKind,
   ThreadId,
@@ -1618,7 +1619,7 @@ export default function Sidebar() {
           ? `Imported Claude session${suffix ? ` ${suffix}` : ""}`
           : provider === "gemini"
             ? `Imported Gemini thread${suffix ? ` ${suffix}` : ""}`
-            : `Imported Codex thread${suffix ? ` ${suffix}` : ""}`;
+            : `Imported ${PROVIDER_DISPLAY_NAMES.codex} thread${suffix ? ` ${suffix}` : ""}`;
       let createdThread = false;
 
       try {
@@ -4411,8 +4412,8 @@ export default function Sidebar() {
       {
         id: "import-thread",
         label: "Import thread from...",
-        description: "Attach a local thread to an existing Codex or Claude session.",
-        keywords: ["import", "resume", "thread", "session", "codex", "claude"],
+        description: `Attach a local thread to an existing ${PROVIDER_DISPLAY_NAMES.codex} or Claude session.`,
+        keywords: ["import", "resume", "thread", "session", "gpt", "claude"],
         shortcutLabel: importThreadShortcutLabel,
       },
       {

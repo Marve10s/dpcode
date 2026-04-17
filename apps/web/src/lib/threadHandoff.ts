@@ -26,7 +26,7 @@ export function resolveAvailableHandoffTargetProviders(
 }
 
 export function resolveHandoffProviderLabel(provider: ProviderKind): string {
-  return provider === "codex" ? "Codex" : PROVIDER_DISPLAY_NAMES[provider];
+  return PROVIDER_DISPLAY_NAMES[provider];
 }
 
 export function resolveThreadHandoffBadgeLabel(thread: Pick<Thread, "handoff">): string | null {

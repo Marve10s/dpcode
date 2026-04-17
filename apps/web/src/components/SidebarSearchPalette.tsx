@@ -5,7 +5,7 @@
  * keyboard navigation and shortcut labels behave like the rest of the app.
  */
 import { SearchIcon, SettingsIcon, SquarePenIcon } from "~/lib/icons";
-import { type ProviderKind } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type ProviderKind } from "@t3tools/contracts";
 import { HiOutlineFolderOpen } from "react-icons/hi2";
 import { LuArrowDownToLine, LuArrowLeft } from "react-icons/lu";
 import { type ComponentType, useEffect, useMemo, useState } from "react";
@@ -203,7 +203,9 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
   });
   const importFieldLabel = importProvider === "claudeAgent" ? "Session ID" : "Thread ID";
   const importPlaceholder =
-    importProvider === "claudeAgent" ? "Paste a Claude session id" : "Paste a Codex thread id";
+    importProvider === "claudeAgent"
+      ? "Paste a Claude session id"
+      : `Paste a ${PROVIDER_DISPLAY_NAMES.codex} thread id`;
 
   const submitImport = async () => {
     const normalizedImportId = importId.trim();
@@ -264,7 +266,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                     onClick={() => setImportProvider("codex")}
                   >
                     <ProviderIcon provider="codex" />
-                    Codex
+                    {PROVIDER_DISPLAY_NAMES.codex}
                   </Button>
                   <Button
                     className={
@@ -300,7 +302,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                 <p className="text-xs text-muted-foreground">
                   {importProvider === "claudeAgent"
                     ? "Claude resumes a persisted session by session id."
-                    : "Codex resumes a persisted thread by thread id."}
+                    : `${PROVIDER_DISPLAY_NAMES.codex} resumes a persisted thread by thread id.`}
                 </p>
               </div>
               {importError ? (

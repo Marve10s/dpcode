@@ -14,13 +14,13 @@ describe("threadHandoff", () => {
     expect(resolveAvailableHandoffTargetProviders("gemini")).toEqual(["codex", "claudeAgent"]);
   });
 
-  it("keeps Codex naming in handoff labels while using provider labels elsewhere", () => {
-    expect(resolveHandoffProviderLabel("codex")).toBe("Codex");
+  it("uses shared provider labels in handoff labels", () => {
+    expect(resolveHandoffProviderLabel("codex")).toBe("GPT");
     expect(resolveHandoffProviderLabel("claudeAgent")).toBe("Claude");
     expect(resolveHandoffProviderLabel("gemini")).toBe("Gemini");
   });
 
-  it("uses Codex wording in the handoff badge for codex threads", () => {
+  it("uses shared provider wording in the handoff badge for codex threads", () => {
     expect(
       resolveThreadHandoffBadgeLabel({
         handoff: {
@@ -30,7 +30,7 @@ describe("threadHandoff", () => {
           bootstrapStatus: "completed",
         },
       }),
-    ).toBe("Handoff from Codex");
+    ).toBe("Handoff from GPT");
   });
 
   it("prefers sticky model selection for the chosen handoff target", () => {
