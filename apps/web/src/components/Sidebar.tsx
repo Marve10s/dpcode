@@ -1614,12 +1614,8 @@ export default function Sidebar() {
       const createdAt = new Date().toISOString();
       const trimmedExternalId = externalId.trim();
       const suffix = trimmedExternalId.slice(-8);
-      const title =
-        provider === "claudeAgent"
-          ? `Imported Claude session${suffix ? ` ${suffix}` : ""}`
-          : provider === "gemini"
-            ? `Imported Gemini thread${suffix ? ` ${suffix}` : ""}`
-            : `Imported ${PROVIDER_DISPLAY_NAMES.codex} thread${suffix ? ` ${suffix}` : ""}`;
+      const importIdKind = provider === "claudeAgent" ? "session" : "thread";
+      const title = `Imported ${PROVIDER_DISPLAY_NAMES[provider]} ${importIdKind}${suffix ? ` ${suffix}` : ""}`;
       let createdThread = false;
 
       try {
@@ -4412,8 +4408,8 @@ export default function Sidebar() {
       {
         id: "import-thread",
         label: "Import thread from...",
-        description: `Attach a local thread to an existing ${PROVIDER_DISPLAY_NAMES.codex} or Claude session.`,
-        keywords: ["import", "resume", "thread", "session", "gpt", "claude"],
+        description: "Attach a local thread to an existing provider thread or session.",
+        keywords: ["import", "resume", "thread", "session", "gpt", "openai", "claude", "gemini"],
         shortcutLabel: importThreadShortcutLabel,
       },
       {

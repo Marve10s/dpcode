@@ -201,11 +201,10 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
     projects: matchedProjects,
     threads: matchedThreads,
   });
-  const importFieldLabel = importProvider === "claudeAgent" ? "Session ID" : "Thread ID";
-  const importPlaceholder =
-    importProvider === "claudeAgent"
-      ? "Paste a Claude session id"
-      : `Paste a ${PROVIDER_DISPLAY_NAMES.codex} thread id`;
+  const importIdKind = importProvider === "claudeAgent" ? "session" : "thread";
+  const importFieldLabel = importIdKind === "session" ? "Session ID" : "Thread ID";
+  const importPlaceholder = `Paste a ${PROVIDER_DISPLAY_NAMES[importProvider]} ${importIdKind} id`;
+  const importHelpText = `${PROVIDER_DISPLAY_NAMES[importProvider]} resumes a persisted ${importIdKind} by ${importIdKind} id.`;
 
   const submitImport = async () => {
     const normalizedImportId = importId.trim();
@@ -278,7 +277,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                     onClick={() => setImportProvider("claudeAgent")}
                   >
                     <ProviderIcon provider="claudeAgent" />
-                    Claude
+                    {PROVIDER_DISPLAY_NAMES.claudeAgent}
                   </Button>
                 </div>
               </div>
@@ -299,11 +298,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                     }
                   }}
                 />
-                <p className="text-xs text-muted-foreground">
-                  {importProvider === "claudeAgent"
-                    ? "Claude resumes a persisted session by session id."
-                    : `${PROVIDER_DISPLAY_NAMES.codex} resumes a persisted thread by thread id.`}
-                </p>
+                <p className="text-xs text-muted-foreground">{importHelpText}</p>
               </div>
               {importError ? (
                 <p className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive">

@@ -1680,7 +1680,7 @@ describe("WebSocket Server", () => {
     expect(domainEvent.payload.text).toBe("hello from runtime");
   });
 
-  it("backfills Codex history when importing a resumed thread", async () => {
+  it("backfills OpenAI thread history when importing a resumed thread", async () => {
     let startSessionInput: unknown;
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
     const providerService: ProviderServiceShape = {
@@ -1830,7 +1830,7 @@ describe("WebSocket Server", () => {
       commandId: "cmd-import-thread-create",
       threadId: "import-thread-1",
       projectId: "project-import-1",
-      title: "Imported Codex thread",
+      title: "Imported GPT thread",
       modelSelection: {
         provider: "codex",
         model: "gpt-5.4",
