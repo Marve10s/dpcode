@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import type { ProviderKind } from "./orchestration";
 
-export const CODEX_REASONING_EFFORT_OPTIONS = ["xhigh", "high", "medium", "low"] as const;
+export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORT_OPTIONS)[number];
 export const CLAUDE_CODE_EFFORT_OPTIONS = [
   "low",
@@ -32,6 +32,7 @@ export const ClaudeModelOptions = Schema.Struct({
   thinking: Schema.optional(Schema.Boolean),
   effort: Schema.optional(Schema.Literals(CLAUDE_CODE_EFFORT_OPTIONS)),
   fastMode: Schema.optional(Schema.Boolean),
+  contextWindow: Schema.optional(Schema.String),
 });
 export type ClaudeModelOptions = typeof ClaudeModelOptions.Type;
 
@@ -54,11 +55,18 @@ export type EffortOption = {
   readonly isDefault?: true;
 };
 
+export type ContextWindowOption = {
+  readonly value: string;
+  readonly label: string;
+  readonly isDefault?: true;
+};
+
 export type ModelCapabilities = {
   readonly reasoningEffortLevels: readonly EffortOption[];
   readonly supportsFastMode: boolean;
   readonly supportsThinkingToggle: boolean;
   readonly promptInjectedEffortLevels: readonly string[];
+  readonly contextWindowOptions: readonly ContextWindowOption[];
 };
 
 const GEMINI_2_5_CAPABILITIES: ModelCapabilities = {
@@ -69,6 +77,7 @@ const GEMINI_2_5_CAPABILITIES: ModelCapabilities = {
   supportsFastMode: false,
   supportsThinkingToggle: false,
   promptInjectedEffortLevels: [],
+  contextWindowOptions: [],
 };
 
 type ModelDefinition = {
@@ -88,14 +97,15 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.4",
       capabilities: {
         reasoningEffortLevels: [
-          { value: "xhigh", label: "Extra High" },
-          { value: "high", label: "High", isDefault: true },
-          { value: "medium", label: "Medium" },
           { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
         ],
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -103,14 +113,15 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.4 Mini",
       capabilities: {
         reasoningEffortLevels: [
-          { value: "xhigh", label: "Extra High" },
-          { value: "high", label: "High", isDefault: true },
-          { value: "medium", label: "Medium" },
           { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
         ],
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -118,14 +129,15 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.3",
       capabilities: {
         reasoningEffortLevels: [
-          { value: "xhigh", label: "Extra High" },
-          { value: "high", label: "High", isDefault: true },
-          { value: "medium", label: "Medium" },
           { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
         ],
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -133,14 +145,15 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.3 Spark",
       capabilities: {
         reasoningEffortLevels: [
-          { value: "xhigh", label: "Extra High" },
-          { value: "high", label: "High", isDefault: true },
-          { value: "medium", label: "Medium" },
           { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
         ],
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -148,14 +161,15 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.2",
       capabilities: {
         reasoningEffortLevels: [
-          { value: "xhigh", label: "Extra High" },
-          { value: "high", label: "High", isDefault: true },
-          { value: "medium", label: "Medium" },
           { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
         ],
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -163,14 +177,15 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.2",
       capabilities: {
         reasoningEffortLevels: [
-          { value: "xhigh", label: "Extra High" },
-          { value: "high", label: "High", isDefault: true },
-          { value: "medium", label: "Medium" },
           { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
         ],
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
   ],
@@ -190,6 +205,10 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: ["ultrathink"],
+        contextWindowOptions: [
+          { value: "200k", label: "200k", isDefault: true },
+          { value: "1m", label: "1M" },
+        ],
       },
     },
     {
@@ -206,6 +225,10 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: true,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: ["ultrathink"],
+        contextWindowOptions: [
+          { value: "200k", label: "200k", isDefault: true },
+          { value: "1m", label: "1M" },
+        ],
       },
     },
     {
@@ -220,6 +243,10 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [
+          { value: "200k", label: "200k", isDefault: true },
+          { value: "1m", label: "1M" },
+        ],
       },
     },
     {
@@ -236,6 +263,10 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: ["ultrathink"],
+        contextWindowOptions: [
+          { value: "200k", label: "200k", isDefault: true },
+          { value: "1m", label: "1M" },
+        ],
       },
     },
     {
@@ -246,6 +277,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: true,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
   ],
@@ -261,6 +293,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -279,6 +312,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -292,6 +326,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {
@@ -305,6 +340,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
         supportsFastMode: false,
         supportsThinkingToggle: false,
         promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
       },
     },
     {

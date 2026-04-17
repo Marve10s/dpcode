@@ -530,6 +530,7 @@ function normalizeProjectFromReadModel(
   if (
     previous &&
     previous.id === incoming.id &&
+    previous.kind === incoming.kind &&
     previous.name === (localName ?? incoming.title) &&
     previous.remoteName === incoming.title &&
     previous.folderName === folderName &&
@@ -546,6 +547,7 @@ function normalizeProjectFromReadModel(
 
   return {
     id: incoming.id,
+    kind: incoming.kind ?? "project",
     name: localName ?? incoming.title,
     remoteName: incoming.title,
     folderName,
@@ -580,6 +582,7 @@ function normalizeProjectFromShell(
   if (
     previous &&
     previous.id === incoming.id &&
+    previous.kind === incoming.kind &&
     previous.name === (localName ?? incoming.title) &&
     previous.remoteName === incoming.title &&
     previous.folderName === folderName &&
@@ -596,6 +599,7 @@ function normalizeProjectFromShell(
 
   return {
     id: incoming.id,
+    kind: incoming.kind ?? "project",
     name: localName ?? incoming.title,
     remoteName: incoming.title,
     folderName,
@@ -2316,10 +2320,16 @@ function mergeStreamingMessage(
   existingMessage: ChatMessage,
   incomingMessage: ChatMessage,
 ): ChatMessage | null {
-  const nextText =
-    incomingMessage.streaming || incomingMessage.text.length === 0
-      ? `${existingMessage.text}${incomingMessage.text}`
-      : incomingMessage.text;
+  let nextText: string;
+  if (incomingMessage.streaming || incomingMessage.text.length === 0) {
+    nextText = `${existingMessage.text}${incomingMessage.text}`;
+  } else if (incomingMessage.text.startsWith(existingMessage.text)) {
+    nextText = incomingMessage.text;
+  } else if (existingMessage.text.startsWith(incomingMessage.text)) {
+    nextText = existingMessage.text;
+  } else {
+    nextText = `${existingMessage.text}${incomingMessage.text}`;
+  }
   const nextAttachments = incomingMessage.attachments ?? existingMessage.attachments;
   const nextCompletedAt = incomingMessage.streaming
     ? existingMessage.completedAt
@@ -2449,6 +2459,7 @@ function applyOrchestrationEvent(
     case "project.created":
       return upsertProjectFromReadModel(state, {
         id: event.payload.projectId,
+        kind: event.payload.kind,
         title: event.payload.title,
         workspaceRoot: event.payload.workspaceRoot,
         defaultModelSelection: event.payload.defaultModelSelection,
@@ -2467,6 +2478,7 @@ function applyOrchestrationEvent(
       }
       return upsertProjectFromReadModel(state, {
         id: existingProject.id,
+        kind: event.payload.kind ?? existingProject.kind,
         title: event.payload.title ?? existingProject.remoteName,
         workspaceRoot: event.payload.workspaceRoot ?? existingProject.cwd,
         defaultModelSelection:

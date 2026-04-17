@@ -30,6 +30,7 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import {
@@ -91,6 +92,11 @@ import { derivePendingApprovals, derivePendingUserInputs } from "../session-logi
 import { gitRemoveWorktreeMutationOptions, gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
+import {
+  ensureHomeChatProject,
+  isHomeChatContainerProject,
+  prewarmHomeChatProject,
+} from "../lib/chatProjects";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { resolveThreadEnvironmentPresentation } from "../lib/threadEnvironment";
 import { type SidebarThreadSummary, type Thread } from "../types";
@@ -225,6 +231,8 @@ const PROJECT_CONTEXT_MENU_REMOVE_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 const PROJECT_CONTEXT_MENU_COPY_PATH_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const PROJECT_CONTEXT_MENU_ARCHIVE_ICON = renderToStaticMarkup(<HiOutlineArchiveBox />);
+const PROJECT_CONTEXT_MENU_DELETE_THREADS_ICON = renderToStaticMarkup(<Trash2 />);
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -846,6 +854,7 @@ export default function Sidebar() {
   const renameWorkspace = useWorkspaceStore((store) => store.renameWorkspace);
   const deleteWorkspace = useWorkspaceStore((store) => store.deleteWorkspace);
   const reorderWorkspace = useWorkspaceStore((store) => store.reorderWorkspace);
+  const homeDir = useWorkspaceStore((store) => store.homeDir);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
@@ -908,6 +917,7 @@ export default function Sidebar() {
   const autoRevealedSubagentThreadIdRef = useRef<ThreadId | null>(null);
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
+  const lastThreadRenameTapRef = useRef<{ threadId: ThreadId; timestamp: number } | null>(null);
   const renamingProjectCommittedRef = useRef(false);
   const renamingProjectInputRef = useRef<HTMLInputElement | null>(null);
   const dragInProgressRef = useRef(false);
@@ -1348,6 +1358,25 @@ export default function Sidebar() {
     navigateToWorkspace(workspaceId);
   }, [createWorkspace, navigateToWorkspace]);
 
+  useEffect(() => {
+    if (!homeDir) {
+      return;
+    }
+    prewarmHomeChatProject(homeDir);
+  }, [homeDir]);
+
+  // Opens the ChatGPT-style "new chat" landing without bouncing through the "/" bootstrap route,
+  // which avoids the visible remount/refresh when the user clicks the Chats-panel pencil action.
+  const handleCreateHomeChat = useCallback(async () => {
+    if (!homeDir) return;
+    const projectId = await ensureHomeChatProject(homeDir);
+    if (!projectId) return;
+    await handleNewThread(projectId, {
+      envMode: "local",
+      worktreePath: null,
+    });
+  }, [handleNewThread, homeDir]);
+
   const beginWorkspaceRename = useCallback((workspaceId: string, title: string) => {
     setRenamingWorkspaceId(workspaceId);
     setRenamingWorkspaceTitle(title);
@@ -1438,6 +1467,7 @@ export default function Sidebar() {
           type: "project.create",
           commandId: newCommandId(),
           projectId,
+          kind: "project",
           title,
           workspaceRoot: cwd,
           defaultModelSelection: {
@@ -1682,6 +1712,38 @@ export default function Sidebar() {
       finishRename();
     },
     [],
+  );
+
+  const openRenameThreadDialog = useCallback((threadId: ThreadId) => {
+    setRenameDialogThreadId(threadId);
+  }, []);
+
+  const handleThreadRenamePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLElement>, threadId: ThreadId) => {
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") {
+        return;
+      }
+
+      const previousTap = lastThreadRenameTapRef.current;
+      const currentTapTimestamp = event.timeStamp;
+      if (
+        previousTap &&
+        previousTap.threadId === threadId &&
+        currentTapTimestamp - previousTap.timestamp <= 320
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        lastThreadRenameTapRef.current = null;
+        openRenameThreadDialog(threadId);
+        return;
+      }
+
+      lastThreadRenameTapRef.current = {
+        threadId,
+        timestamp: currentTapTimestamp,
+      };
+    },
+    [openRenameThreadDialog],
   );
 
   /**
@@ -1992,6 +2054,187 @@ export default function Sidebar() {
       await archiveThread(threadId);
     },
     [archiveThread],
+  );
+
+  /**
+   * Archive every non-archived thread for a given project in one pass.
+   * Skips (and reports) threads with a running session since the server
+   * rejects archiving an active turn. Confirms the batch once up-front
+   * rather than prompting per-thread to avoid dialog spam on large projects.
+   */
+  const archiveAllThreadsInProject = useCallback(
+    async (projectId: ProjectId): Promise<void> => {
+      const api = readNativeApi();
+      if (!api) return;
+      const project = projectById.get(projectId);
+      if (!project) return;
+
+      const projectThreads = sidebarThreads.filter(
+        (thread) => thread.projectId === projectId && thread.archivedAt == null,
+      );
+      if (projectThreads.length === 0) {
+        toastManager.add({
+          type: "info",
+          title: "Nothing to archive",
+          description: `"${project.name}" has no threads to archive.`,
+        });
+        return;
+      }
+
+      const archivableThreads = projectThreads.filter(
+        (thread) => !(thread.session?.status === "running" && thread.session.activeTurnId != null),
+      );
+      const runningCount = projectThreads.length - archivableThreads.length;
+
+      if (archivableThreads.length === 0) {
+        toastManager.add({
+          type: "error",
+          title: "Cannot archive threads",
+          description:
+            runningCount === 1
+              ? "The only thread in this project is running. Stop it before archiving."
+              : `All ${runningCount} threads in this project are running. Stop them before archiving.`,
+        });
+        return;
+      }
+
+      // Bulk archive always confirms — this is a folder-level operation, and
+      // `appSettings.confirmThreadArchive` (default `false`) is scoped to
+      // single-thread archiving where the user explicitly picked one row.
+      const archiveLines = [
+        `Archive ${archivableThreads.length} thread${archivableThreads.length === 1 ? "" : "s"} in "${project.name}"?`,
+        "Archived threads are hidden from the sidebar but can be restored later.",
+      ];
+      if (runningCount > 0) {
+        archiveLines.push(
+          "",
+          `${runningCount} running thread${runningCount === 1 ? " is" : "s are"} currently active and will be skipped.`,
+        );
+      }
+      const archiveConfirmed = api
+        ? await api.dialogs.confirm(archiveLines.join("\n"))
+        : await showConfirmDialogFallback(archiveLines.join("\n"));
+      if (!archiveConfirmed) return;
+
+      let archivedCount = 0;
+      let failureCount = 0;
+      for (const thread of archivableThreads) {
+        try {
+          await archiveThread(thread.id);
+          archivedCount += 1;
+        } catch (error) {
+          failureCount += 1;
+          console.error("Failed to archive thread during bulk archive", {
+            threadId: thread.id,
+            projectId,
+            error,
+          });
+        }
+      }
+
+      // Clear any transient selection that pointed at just-archived rows.
+      removeFromSelection(archivableThreads.map((thread) => thread.id));
+
+      if (archivedCount > 0) {
+        const skippedDescription =
+          runningCount > 0
+            ? ` Skipped ${runningCount} running thread${runningCount === 1 ? "" : "s"}.`
+            : "";
+        toastManager.add({
+          type: failureCount > 0 ? "warning" : "success",
+          title: archivedCount === 1 ? "Thread archived" : `Archived ${archivedCount} threads`,
+          description:
+            failureCount > 0
+              ? `Failed to archive ${failureCount} thread${failureCount === 1 ? "" : "s"}.${skippedDescription}`
+              : runningCount > 0
+                ? skippedDescription.trim()
+                : `"${project.name}" cleared.`,
+        });
+      } else if (failureCount > 0) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to archive threads",
+          description: `Could not archive ${failureCount} thread${failureCount === 1 ? "" : "s"} in "${project.name}".`,
+        });
+      }
+    },
+    [archiveThread, projectById, removeFromSelection, sidebarThreads],
+  );
+
+  /**
+   * Delete every thread for a given project in one pass. Uses the shared
+   * `deleteThread` helper so running sessions are stopped, worktrees are
+   * cleaned up, and draft/pinned/split view state is pruned consistently.
+   * A single `deletedThreadIds` set is passed through so orphan-worktree
+   * detection treats the whole batch as "going away" at once.
+   */
+  const deleteAllThreadsInProject = useCallback(
+    async (projectId: ProjectId): Promise<void> => {
+      const api = readNativeApi();
+      if (!api) return;
+      const project = projectById.get(projectId);
+      if (!project) return;
+
+      const projectThreads = sidebarThreads.filter((thread) => thread.projectId === projectId);
+      if (projectThreads.length === 0) {
+        toastManager.add({
+          type: "info",
+          title: "Nothing to delete",
+          description: `"${project.name}" has no threads to delete.`,
+        });
+        return;
+      }
+
+      // Bulk delete always confirms — wiping every thread in a folder is
+      // unrecoverable, so we bypass `appSettings.confirmThreadDelete` (which is
+      // scoped to single-thread deletion from the thread-level menu).
+      const count = projectThreads.length;
+      const deleteConfirmationMessage = [
+        `Delete ${count} thread${count === 1 ? "" : "s"} in "${project.name}"?`,
+        "This permanently clears conversation history for these threads.",
+      ].join("\n");
+      const deleteConfirmed = api
+        ? await api.dialogs.confirm(deleteConfirmationMessage)
+        : await showConfirmDialogFallback(deleteConfirmationMessage);
+      if (!deleteConfirmed) return;
+
+      const deletedIds = new Set<ThreadId>(projectThreads.map((thread) => thread.id));
+      let deletedCount = 0;
+      let failureCount = 0;
+      for (const thread of projectThreads) {
+        try {
+          await deleteThread(thread.id, { deletedThreadIds: deletedIds });
+          deletedCount += 1;
+        } catch (error) {
+          failureCount += 1;
+          console.error("Failed to delete thread during bulk delete", {
+            threadId: thread.id,
+            projectId,
+            error,
+          });
+        }
+      }
+
+      removeFromSelection([...deletedIds]);
+
+      if (deletedCount > 0) {
+        toastManager.add({
+          type: failureCount > 0 ? "warning" : "success",
+          title: deletedCount === 1 ? "Thread deleted" : `Deleted ${deletedCount} threads`,
+          description:
+            failureCount > 0
+              ? `Failed to delete ${failureCount} thread${failureCount === 1 ? "" : "s"}.`
+              : `"${project.name}" cleared.`,
+        });
+      } else if (failureCount > 0) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to delete threads",
+          description: `Could not delete ${failureCount} thread${failureCount === 1 ? "" : "s"} in "${project.name}".`,
+        });
+      }
+    },
+    [deleteThread, projectById, removeFromSelection, sidebarThreads],
   );
 
   const handleThreadContextMenu = useCallback(
@@ -2317,32 +2560,70 @@ export default function Sidebar() {
       if (!api) return;
       const project = projects.find((entry) => entry.id === projectId);
       if (!project) return;
-      const clicked = await showContextMenuFallback(
-        [
-          {
-            id: "open-in-finder",
-            label: "Open in Finder",
-            icon: PROJECT_CONTEXT_MENU_FOLDER_ICON,
-          },
-          {
-            id: "copy-path",
-            label: "Copy Path",
-            icon: PROJECT_CONTEXT_MENU_COPY_PATH_ICON,
-          },
-          {
-            id: "rename",
-            label: "Edit name",
-            icon: PROJECT_CONTEXT_MENU_EDIT_ICON,
-          },
-          {
-            id: "delete",
-            label: "Remove",
-            destructive: true,
-            icon: PROJECT_CONTEXT_MENU_REMOVE_ICON,
-          },
-        ],
-        position,
+
+      const projectThreadsForMenu = sidebarThreads.filter(
+        (thread) => thread.projectId === projectId,
       );
+      const hasAnyThreads = projectThreadsForMenu.length > 0;
+      const hasArchivableThreads = projectThreadsForMenu.some(
+        (thread) => thread.archivedAt == null,
+      );
+
+      type ProjectContextMenuId =
+        | "open-in-finder"
+        | "copy-path"
+        | "rename"
+        | "archive-threads"
+        | "delete-threads"
+        | "delete";
+
+      const items: {
+        id: ProjectContextMenuId;
+        label: string;
+        icon: string;
+        destructive?: boolean;
+      }[] = [
+        {
+          id: "open-in-finder",
+          label: "Open in Finder",
+          icon: PROJECT_CONTEXT_MENU_FOLDER_ICON,
+        },
+        {
+          id: "copy-path",
+          label: "Copy Path",
+          icon: PROJECT_CONTEXT_MENU_COPY_PATH_ICON,
+        },
+        {
+          id: "rename",
+          label: "Edit name",
+          icon: PROJECT_CONTEXT_MENU_EDIT_ICON,
+        },
+      ];
+
+      if (hasArchivableThreads) {
+        items.push({
+          id: "archive-threads",
+          label: "Archive threads",
+          icon: PROJECT_CONTEXT_MENU_ARCHIVE_ICON,
+        });
+      }
+      if (hasAnyThreads) {
+        items.push({
+          id: "delete-threads",
+          label: "Delete threads",
+          icon: PROJECT_CONTEXT_MENU_DELETE_THREADS_ICON,
+          destructive: true,
+        });
+      }
+
+      items.push({
+        id: "delete",
+        label: "Remove",
+        destructive: true,
+        icon: PROJECT_CONTEXT_MENU_REMOVE_ICON,
+      });
+
+      const clicked = await showContextMenuFallback<ProjectContextMenuId>(items, position);
 
       if (clicked === "open-in-finder") {
         try {
@@ -2367,6 +2648,14 @@ export default function Sidebar() {
         renamingProjectCommittedRef.current = false;
         setRenamingProjectId(projectId);
         setRenamingProjectName(project.localName ?? project.name);
+        return;
+      }
+      if (clicked === "archive-threads") {
+        await archiveAllThreadsInProject(projectId);
+        return;
+      }
+      if (clicked === "delete-threads") {
+        await deleteAllThreadsInProject(projectId);
         return;
       }
       if (clicked !== "delete") return;
@@ -2401,7 +2690,14 @@ export default function Sidebar() {
         });
       }
     },
-    [clearProjectDraftThreads, copyPathToClipboard, projects, sidebarThreads],
+    [
+      archiveAllThreadsInProject,
+      clearProjectDraftThreads,
+      copyPathToClipboard,
+      deleteAllThreadsInProject,
+      projects,
+      sidebarThreads,
+    ],
   );
 
   const projectDnDSensors = useSensors(
@@ -2518,9 +2814,33 @@ export default function Sidebar() {
     () => sortProjectsForSidebar(projects, sidebarThreads, appSettings.sidebarProjectSortOrder),
     [appSettings.sidebarProjectSortOrder, projects, sidebarThreads],
   );
+  const chatProjects = useMemo(
+    () => sortedProjects.filter((project) => isHomeChatContainerProject(project, homeDir)),
+    [homeDir, sortedProjects],
+  );
+  const visibleChatThreads = useMemo(
+    () =>
+      sortThreadsForSidebar(
+        sidebarDisplayThreads.filter(
+          (thread) =>
+            chatProjects.some((project) => project.id === thread.projectId) &&
+            !thread.parentThreadId &&
+            !thread.archivedAt,
+        ),
+        appSettings.sidebarThreadSortOrder,
+      ),
+    [appSettings.sidebarThreadSortOrder, chatProjects, sidebarDisplayThreads],
+  );
+  const standardProjects = useMemo(
+    () =>
+      sortedProjects.filter(
+        (project) => project.kind === "project" && !isHomeChatContainerProject(project, homeDir),
+      ),
+    [homeDir, sortedProjects],
+  );
   const allProjectsExpanded = useMemo(
-    () => projects.length > 0 && projects.every((project) => project.expanded),
-    [projects],
+    () => standardProjects.length > 0 && standardProjects.every((project) => project.expanded),
+    [standardProjects],
   );
 
   useEffect(() => {
@@ -2617,7 +2937,7 @@ export default function Sidebar() {
   const visibleSidebarThreadIds = useMemo(() => {
     const visibleThreadIds = pinnedThreads.map((thread) => thread.id);
 
-    for (const project of sortedProjects) {
+    for (const project of standardProjects) {
       const projectThreads = sortThreadsForSidebar(
         getUnpinnedThreadsForSidebar(
           sidebarDisplayThreads.filter((thread) => thread.projectId === project.id),
@@ -2689,7 +3009,7 @@ export default function Sidebar() {
     sidebarDisplayThreads,
     splitViewBySourceThreadId,
     splitViews,
-    sortedProjects,
+    standardProjects,
   ]);
   const isManualProjectSorting = appSettings.sidebarProjectSortOrder === "manual";
   const threadJumpCommandByThreadId = useMemo(() => {
@@ -2841,6 +3161,8 @@ export default function Sidebar() {
     const threadJumpLabel = visibleThreadJumpLabelByThreadId.get(thread.id) ?? null;
     const threadJumpLabelParts =
       visibleThreadJumpLabelPartsByThreadId.get(thread.id) ?? EMPTY_SHORTCUT_PARTS;
+    const pinnedRowPaddingClassName =
+      rightMetaBadge || threadJumpLabel || isPendingArchiveConfirmation ? "pr-16" : "pr-12";
     const pinnedTimestampClassName = isSubagentThread
       ? "w-[1.2rem] text-right text-[10px] leading-none tabular-nums text-muted-foreground/26 transition-opacity group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0"
       : "w-[1.625rem] text-right text-[length:var(--app-font-size-ui-meta,11px)] leading-none tabular-nums text-muted-foreground/38 transition-opacity group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0";
@@ -2852,12 +3174,19 @@ export default function Sidebar() {
           tabIndex={0}
           data-thread-item
           className={cn(
-            "relative flex h-8 w-full items-center gap-2 rounded-md px-2 pr-9 text-left text-[length:var(--app-font-size-ui,12px)] transition-colors cursor-pointer",
+            "relative flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[length:var(--app-font-size-ui,12px)] transition-colors cursor-pointer",
+            pinnedRowPaddingClassName,
             isActive
               ? "bg-accent/62 text-foreground/90 dark:bg-accent/42"
               : "text-foreground/72 hover:bg-accent/40 hover:text-foreground/90",
           )}
           onClick={() => activateThread(thread.id)}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openRenameThreadDialog(thread.id);
+          }}
+          onPointerUp={(event) => handleThreadRenamePointerUp(event, thread.id)}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
@@ -3092,8 +3421,9 @@ export default function Sidebar() {
           onDoubleClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            setRenameDialogThreadId(thread.id);
+            openRenameThreadDialog(thread.id);
           }}
+          onPointerUp={(event) => handleThreadRenamePointerUp(event, thread.id)}
           onKeyDown={(event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
@@ -3330,6 +3660,16 @@ export default function Sidebar() {
           </div>
         </SidebarMenuSubButton>
       </SidebarMenuSubItem>
+    );
+  }
+
+  function renderChatItem(thread: (typeof visibleChatThreads)[number]) {
+    return renderThreadRow(
+      thread,
+      visibleChatThreads.map((visibleThread) => visibleThread.id),
+      0,
+      0,
+      false,
     );
   }
 
@@ -4021,8 +4361,11 @@ export default function Sidebar() {
         : shouldHighlightDesktopUpdateError(desktopUpdateState)
           ? "bg-rose-500 hover:bg-rose-600"
           : "bg-[var(--info-foreground)] hover:brightness-110";
+  const desktopUpdateButtonHasSecondaryLabel =
+    desktopUpdateButtonPresentation.secondaryLabel !== null;
   const desktopUpdateRowButtonClasses = cn(
-    "inline-flex min-h-8 shrink-0 items-center justify-between gap-2 rounded-full px-2.5 text-left text-white transition-colors",
+    "inline-flex shrink-0 items-center justify-between gap-2 rounded-full px-2.5 text-left text-white transition-colors",
+    desktopUpdateButtonHasSecondaryLabel ? "min-h-6 py-1" : "h-6",
     desktopUpdateButtonInteractivityClasses,
     desktopUpdateButtonClasses,
   );
@@ -4526,7 +4869,7 @@ export default function Sidebar() {
                     Threads
                   </span>
                   <div className="-mr-1 flex items-center gap-1.5">
-                    {projects.length > 0 ? (
+                    {standardProjects.length > 0 ? (
                       <Tooltip>
                         <TooltipTrigger
                           render={
@@ -4690,7 +5033,7 @@ export default function Sidebar() {
                         items={sortedProjects.map((project) => project.id)}
                         strategy={verticalListSortingStrategy}
                       >
-                        {sortedProjects.map((project) => (
+                        {standardProjects.map((project) => (
                           <SortableProjectItem key={project.id} projectId={project.id}>
                             {(dragHandleProps) => renderProjectItem(project, dragHandleProps)}
                           </SortableProjectItem>
@@ -4700,7 +5043,7 @@ export default function Sidebar() {
                   </DndContext>
                 ) : (
                   <SidebarMenu ref={attachProjectListAutoAnimateRef} className="gap-3">
-                    {sortedProjects.map((project) => (
+                    {standardProjects.map((project) => (
                       <SidebarMenuItem key={project.id} className="rounded-md">
                         {renderProjectItem(project, null)}
                       </SidebarMenuItem>
@@ -4708,7 +5051,7 @@ export default function Sidebar() {
                   </SidebarMenu>
                 )}
 
-                {projects.length === 0 && !shouldShowProjectPathEntry && (
+                {standardProjects.length === 0 && !shouldShowProjectPathEntry && (
                   <div className="px-2 pt-4 text-center text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/58">
                     No projects yet
                   </div>
@@ -4720,7 +5063,41 @@ export default function Sidebar() {
       </SidebarContent>
 
       <SidebarSeparator />
-      <SidebarFooter className="p-1.5 font-system-ui">
+      <SidebarFooter className="gap-2 p-2 font-system-ui">
+        <div className="rounded-2xl bg-sidebar-accent/25 ">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="px-2 text-[length:var(--app-font-size-ui,12px)] font-normal tracking-tight text-muted-foreground/58">
+              Chats
+            </span>
+            <div className="flex items-center pr-1.5 gap-1.5">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label="Open new chat home"
+                      data-testid="new-chat-button"
+                      className="sidebar-icon-button inline-flex size-5 cursor-pointer"
+                      onClick={() => void handleCreateHomeChat()}
+                    >
+                      <SquarePenIcon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">New chat</TooltipPopup>
+              </Tooltip>
+            </div>
+          </div>
+          {visibleChatThreads.length > 0 ? (
+            <SidebarMenu className="gap-1">
+              {visibleChatThreads.map((thread) => renderChatItem(thread))}
+            </SidebarMenu>
+          ) : (
+            <div className="py-2 text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/48">
+              No chats yet
+            </div>
+          )}
+        </div>
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex items-center gap-2">
@@ -4750,6 +5127,11 @@ export default function Sidebar() {
                           <span className="truncate text-[10px] font-semibold">
                             {desktopUpdateButtonPresentation.label}
                           </span>
+                          {desktopUpdateButtonPresentation.secondaryLabel ? (
+                            <span className="truncate text-[9px] text-white/80">
+                              {desktopUpdateButtonPresentation.secondaryLabel}
+                            </span>
+                          ) : null}
                         </span>
                         {desktopUpdateButtonPresentation.progressPercent !== null ? (
                           <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white/95">

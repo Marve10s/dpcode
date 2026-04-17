@@ -10,6 +10,7 @@ import {
   type GeminiThinkingBudget,
   type GeminiThinkingLevel,
   type ModelCapabilities,
+  type ModelSelection,
   type ModelSlug,
   type ProviderKind,
   CodexReasoningEffort,
@@ -42,6 +43,7 @@ export const EMPTY_MODEL_CAPABILITIES: ModelCapabilities = {
   supportsFastMode: false,
   supportsThinkingToggle: false,
   promptInjectedEffortLevels: [],
+  contextWindowOptions: [],
 };
 export const DEFAULT_GEMINI_MODEL_CAPABILITIES = EMPTY_MODEL_CAPABILITIES;
 
@@ -53,6 +55,7 @@ export const GEMINI_3_MODEL_CAPABILITIES: ModelCapabilities = {
   supportsFastMode: false,
   supportsThinkingToggle: false,
   promptInjectedEffortLevels: [],
+  contextWindowOptions: [],
 };
 
 export const GEMINI_2_5_MODEL_CAPABILITIES: ModelCapabilities = {
@@ -63,6 +66,7 @@ export const GEMINI_2_5_MODEL_CAPABILITIES: ModelCapabilities = {
   supportsFastMode: false,
   supportsThinkingToggle: false,
   promptInjectedEffortLevels: [],
+  contextWindowOptions: [],
 };
 
 function isGeminiThinkingLevel(value: string): value is GeminiThinkingLevel {
@@ -210,6 +214,16 @@ export function getDefaultEffort(caps: ModelCapabilities): string | null {
   return caps.reasoningEffortLevels.find((l) => l.isDefault)?.value ?? null;
 }
 
+/** Check whether a capabilities object includes a given context window value. */
+export function hasContextWindowOption(caps: ModelCapabilities, value: string): boolean {
+  return caps.contextWindowOptions.some((option) => option.value === value);
+}
+
+/** Return the default context window value for a capabilities object, or null if none. */
+export function getDefaultContextWindow(caps: ModelCapabilities): string | null {
+  return caps.contextWindowOptions.find((option) => option.isDefault)?.value ?? null;
+}
+
 // ── Data-driven capability resolver ───────────────────────────────────
 
 export function getModelCapabilities(
@@ -243,11 +257,13 @@ export function normalizeModelSlug(
     return null;
   }
 
+  const providerScopedModel =
+    provider === "claudeAgent" ? trimmed.replace(/\[[^\]]+\]$/u, "") : trimmed;
   const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[provider] as Record<string, ModelSlug>;
-  const aliased = Object.prototype.hasOwnProperty.call(aliases, trimmed)
-    ? aliases[trimmed]
+  const aliased = Object.prototype.hasOwnProperty.call(aliases, providerScopedModel)
+    ? aliases[providerScopedModel]
     : undefined;
-  return typeof aliased === "string" ? aliased : (trimmed as ModelSlug);
+  return typeof aliased === "string" ? aliased : (providerScopedModel as ModelSlug);
 }
 
 export function resolveSelectableModel(
@@ -332,7 +348,9 @@ export function normalizeClaudeModelOptions(
 ): ClaudeModelOptions | undefined {
   const caps = getModelCapabilities("claudeAgent", model);
   const defaultReasoningEffort = getDefaultEffort(caps);
+  const defaultContextWindow = getDefaultContextWindow(caps);
   const resolvedEffort = trimOrNull(modelOptions?.effort);
+  const resolvedContextWindow = trimOrNull(modelOptions?.contextWindow);
   const isPromptInjected = caps.promptInjectedEffortLevels.includes(resolvedEffort ?? "");
   const effort =
     resolvedEffort &&
@@ -341,6 +359,12 @@ export function normalizeClaudeModelOptions(
     resolvedEffort !== defaultReasoningEffort
       ? resolvedEffort
       : undefined;
+  const contextWindow =
+    resolvedContextWindow &&
+    hasContextWindowOption(caps, resolvedContextWindow) &&
+    resolvedContextWindow !== defaultContextWindow
+      ? resolvedContextWindow
+      : undefined;
   const thinking =
     caps.supportsThinkingToggle && modelOptions?.thinking === false ? false : undefined;
   const fastMode = caps.supportsFastMode && modelOptions?.fastMode === true ? true : undefined;
@@ -348,6 +372,7 @@ export function normalizeClaudeModelOptions(
     ...(thinking === false ? { thinking: false } : {}),
     ...(effort ? { effort } : {}),
     ...(fastMode ? { fastMode: true } : {}),
+    ...(contextWindow ? { contextWindow } : {}),
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }
@@ -376,6 +401,19 @@ export function normalizeGeminiModelOptions(
   }
 
   return nextOptions;
+}
+
+export function resolveApiModelId(modelSelection: ModelSelection): string {
+  switch (modelSelection.provider) {
+    case "claudeAgent": {
+      const caps = getModelCapabilities(modelSelection.provider, modelSelection.model);
+      return modelSelection.options?.contextWindow === "1m" && hasContextWindowOption(caps, "1m")
+        ? `${modelSelection.model}[1m]`
+        : modelSelection.model;
+    }
+    default:
+      return modelSelection.model;
+  }
 }
 
 export function applyClaudePromptEffortPrefix(

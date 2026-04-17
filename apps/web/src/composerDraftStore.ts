@@ -648,12 +648,20 @@ function normalizeProviderModelOptions(
       : claudeCandidate?.fastMode === false
         ? false
         : undefined;
+  const claudeContextWindow =
+    typeof claudeCandidate?.contextWindow === "string" && claudeCandidate.contextWindow.length > 0
+      ? claudeCandidate.contextWindow
+      : undefined;
   const claude =
-    claudeThinking !== undefined || claudeEffort !== undefined || claudeFastMode !== undefined
+    claudeThinking !== undefined ||
+    claudeEffort !== undefined ||
+    claudeFastMode !== undefined ||
+    claudeContextWindow !== undefined
       ? {
           ...(claudeThinking !== undefined ? { thinking: claudeThinking } : {}),
           ...(claudeEffort !== undefined ? { effort: claudeEffort } : {}),
           ...(claudeFastMode !== undefined ? { fastMode: claudeFastMode } : {}),
+          ...(claudeContextWindow !== undefined ? { contextWindow: claudeContextWindow } : {}),
         }
       : undefined;
 
@@ -709,6 +717,8 @@ function normalizeModelSelection(
   if (typeof rawModel !== "string") {
     return null;
   }
+  const inferredClaudeContextWindow =
+    provider === "claudeAgent" && /\[1m\]$/iu.test(rawModel) ? "1m" : undefined;
   const model = normalizeModelSlug(rawModel, provider);
   if (!model) {
     return null;
@@ -722,7 +732,13 @@ function normalizeModelSelection(
     provider === "codex"
       ? modelOptions?.codex
       : provider === "claudeAgent"
-        ? modelOptions?.claudeAgent
+        ? inferredClaudeContextWindow !== undefined
+          ? {
+              ...(modelOptions?.claudeAgent ?? {}),
+              contextWindow:
+                modelOptions?.claudeAgent?.contextWindow ?? inferredClaudeContextWindow,
+            }
+          : modelOptions?.claudeAgent
         : modelOptions?.gemini;
   return buildModelSelection(provider, model, options);
 }

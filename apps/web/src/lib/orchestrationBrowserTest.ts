@@ -25,6 +25,7 @@ export function createShellSnapshotFromReadModel(
       .filter((project) => project.deletedAt === null)
       .map((project) => ({
         id: project.id,
+        kind: project.kind,
         title: project.title,
         workspaceRoot: project.workspaceRoot,
         defaultModelSelection: project.defaultModelSelection,

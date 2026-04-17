@@ -75,6 +75,7 @@ function createSnapshot(overrides?: Partial<OrchestrationReadModel["threads"][nu
     projects: [
       {
         id: PROJECT_ID,
+        kind: "project",
         title: "Project",
         workspaceRoot: "/repo/project",
         defaultModelSelection: {

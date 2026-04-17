@@ -271,6 +271,7 @@ function createSnapshotForTargetUser(options: {
     projects: [
       {
         id: PROJECT_ID,
+        kind: "project",
         title: "Project",
         workspaceRoot: "/repo/project",
         defaultModelSelection: {
