@@ -1580,7 +1580,7 @@ export default function Sidebar() {
   ]);
 
   const handleImportThread = useCallback(
-    async (provider: "codex" | "claudeAgent", externalId: string) => {
+    async (provider: ProviderKind, externalId: string) => {
       const api = readNativeApi();
       if (!api) {
         throw new Error("The app server is unavailable.");
@@ -1611,7 +1611,9 @@ export default function Sidebar() {
       const title =
         provider === "claudeAgent"
           ? `Imported Claude session${suffix ? ` ${suffix}` : ""}`
-          : `Imported Codex thread${suffix ? ` ${suffix}` : ""}`;
+          : provider === "gemini"
+            ? `Imported Gemini thread${suffix ? ` ${suffix}` : ""}`
+            : `Imported Codex thread${suffix ? ` ${suffix}` : ""}`;
       let createdThread = false;
 
       try {
@@ -5206,7 +5208,7 @@ function SidebarSearchPaletteController(props: {
   onAddProject: () => void;
   onOpenSettings: () => void;
   onOpenProject: (projectId: string) => void;
-  onImportThread: (provider: "codex" | "claudeAgent", externalId: string) => Promise<void>;
+  onImportThread: (provider: ProviderKind, externalId: string) => Promise<void>;
   onOpenThread: (threadId: string) => void;
 }) {
   const selectAllThreads = useMemo(() => createAllThreadsSelector(), []);
