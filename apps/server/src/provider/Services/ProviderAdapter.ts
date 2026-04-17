@@ -14,6 +14,7 @@ import type {
   ProviderForkThreadInput,
   ProviderForkThreadResult,
   ProviderKind,
+  ProviderListAgentsResult,
   ProviderListCommandsInput,
   ProviderListCommandsResult,
   ProviderListModelsResult,
@@ -156,6 +157,11 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**
+   * Trigger provider-native context compaction for a thread when supported.
+   */
+  readonly compactThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
    * Fork one provider thread into another persisted thread cursor when supported.
    *
    * Adapters may omit this to signal that the caller should fall back to
@@ -212,6 +218,11 @@ export interface ProviderAdapterShape<TError> {
    * List models directly from the provider runtime when supported.
    */
   readonly listModels?: () => Effect.Effect<ProviderListModelsResult, TError>;
+
+  /**
+   * List agents/subagents directly from the provider runtime when supported.
+   */
+  readonly listAgents?: () => Effect.Effect<ProviderListAgentsResult, TError>;
 
   /**
    * Transcribe one captured voice clip into plain text when supported.

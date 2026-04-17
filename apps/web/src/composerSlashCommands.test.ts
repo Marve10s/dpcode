@@ -147,6 +147,7 @@ describe("composerSlashCommands", () => {
     const availableCommands = getAvailableComposerSlashCommands({
       provider: "codex",
       supportsFastSlashCommand: true,
+      canOfferCompactCommand: true,
       canOfferReviewCommand: true,
       canOfferForkCommand: true,
       providerNativeCommandNames: ["fast", "/model", "status"],
@@ -164,6 +165,7 @@ describe("composerSlashCommands", () => {
       getAvailableComposerSlashCommands({
         provider: "claudeAgent",
         supportsFastSlashCommand: true,
+        canOfferCompactCommand: true,
         canOfferReviewCommand: true,
         canOfferForkCommand: true,
       }),
@@ -175,10 +177,33 @@ describe("composerSlashCommands", () => {
       getAvailableComposerSlashCommands({
         provider: "gemini",
         supportsFastSlashCommand: false,
+        canOfferCompactCommand: false,
         canOfferReviewCommand: true,
         canOfferForkCommand: true,
       }),
     ).toEqual(["clear", "model", "plan", "default", "review", "fork", "status", "subagents"]);
+  });
+
+  it("only offers /compact when compaction is available", () => {
+    expect(
+      getAvailableComposerSlashCommands({
+        provider: "codex",
+        supportsFastSlashCommand: true,
+        canOfferCompactCommand: true,
+        canOfferReviewCommand: true,
+        canOfferForkCommand: true,
+      }),
+    ).toContain("compact");
+
+    expect(
+      getAvailableComposerSlashCommands({
+        provider: "codex",
+        supportsFastSlashCommand: true,
+        canOfferCompactCommand: false,
+        canOfferReviewCommand: true,
+        canOfferForkCommand: true,
+      }),
+    ).not.toContain("compact");
   });
 
   it("treats claude aliases like /fork as provider-native collisions", () => {

@@ -96,8 +96,11 @@ function createThreadControlHarness() {
   const updateSession = vi
     .spyOn(manager as unknown as { updateSession: (...args: unknown[]) => void }, "updateSession")
     .mockImplementation(() => {});
+  const emitEvent = vi
+    .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
+    .mockImplementation(() => {});
 
-  return { manager, context, requireSession, sendRequest, updateSession };
+  return { manager, context, requireSession, sendRequest, updateSession, emitEvent };
 }
 
 function createPendingUserInputHarness() {
@@ -499,7 +502,7 @@ describe("startSession", () => {
       )
       .mockImplementation(() => {
         throw new Error(
-          "Codex CLI v0.36.0 is too old for DP Code. Upgrade to v0.37.0 or newer and restart DP Code.",
+          "OpenAI CLI (`codex`) v0.36.0 is too old for DP Code. Upgrade to v0.37.0 or newer and restart DP Code.",
         );
       });
 
@@ -511,7 +514,7 @@ describe("startSession", () => {
           runtimeMode: "full-access",
         }),
       ).rejects.toThrow(
-        "Codex CLI v0.36.0 is too old for DP Code. Upgrade to v0.37.0 or newer and restart DP Code.",
+        "OpenAI CLI (`codex`) v0.36.0 is too old for DP Code. Upgrade to v0.37.0 or newer and restart DP Code.",
       );
       expect(versionCheck).toHaveBeenCalledTimes(1);
       expect(events).toEqual([
@@ -519,7 +522,7 @@ describe("startSession", () => {
           method: "session/startFailed",
           kind: "error",
           message:
-            "Codex CLI v0.36.0 is too old for DP Code. Upgrade to v0.37.0 or newer and restart DP Code.",
+            "OpenAI CLI (`codex`) v0.36.0 is too old for DP Code. Upgrade to v0.37.0 or newer and restart DP Code.",
         },
       ]);
     } finally {
@@ -1562,6 +1565,45 @@ describe("thread checkpoint control", () => {
       turns: [],
     });
   });
+
+  it("emits compaction progress before waiting for thread/compact/start", async () => {
+    const { manager, context, sendRequest, updateSession, emitEvent } =
+      createThreadControlHarness();
+    let resolveRequest: (() => void) | undefined;
+    sendRequest.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = () => resolve({});
+        }),
+    );
+
+    const compactPromise = manager.compactThread(asThreadId("thread_1"));
+
+    await vi.waitFor(() => {
+      expect(sendRequest).toHaveBeenCalledWith(context, "thread/compact/start", {
+        threadId: "thread_1",
+      });
+      expect(updateSession).toHaveBeenCalledWith(context, {
+        status: "running",
+      });
+      expect(emitEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "notification",
+          provider: "codex",
+          threadId: "thread_1",
+          method: "thread/compacting",
+          message: "Compacting context",
+          payload: {
+            threadId: "thread_1",
+            state: "compacting",
+          },
+        }),
+      );
+    });
+
+    resolveRequest?.();
+    await compactPromise;
+  });
 });
 
 describe("respondToUserInput", () => {
@@ -1726,7 +1768,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("emits child lifecycle notifications without mutating the parent session state", () => {
+  it("suppresses child lifecycle notifications without mutating the parent session state", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
 
     (
@@ -1772,22 +1814,82 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        method: "turn/started",
+    expect(emitEvent).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  it("suppresses child plan notifications", () => {
+    const { manager, context, emitEvent } = createCollabNotificationHarness();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/completed",
+      params: {
+        item: {
+          type: "collabAgentToolCall",
+          id: "call_collab_1",
+          receiverThreadIds: ["child_provider_1"],
+        },
+        threadId: "provider_parent",
+        turnId: "turn_parent",
+      },
+    });
+    emitEvent.mockClear();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/plan/updated",
+      params: {
+        threadId: "child_provider_1",
         turnId: "turn_child_1",
-        parentTurnId: "turn_parent",
-        providerThreadId: "child_provider_1",
-        providerParentThreadId: "provider_parent",
-      }),
-    );
-    expect(emitEvent).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        method: "turn/completed",
+        plan: [{ step: "Plan child work", status: "inProgress" }],
+      },
+    });
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/plan/delta",
+      params: {
+        threadId: "child_provider_1",
         turnId: "turn_child_1",
-        parentTurnId: "turn_parent",
+        itemId: "plan_item_child_1",
+        delta: "still planning",
+      },
+    });
+
+    expect(emitEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not suppress provider-parent-only child notifications without a mapped parent turn", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    context.collabReceiverParents.set("child_provider_1", "provider_parent");
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/plan/updated",
+      params: {
+        threadId: "child_provider_1",
+        turnId: "turn_child_1",
+        plan: [{ step: "Plan child work", status: "inProgress" }],
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/plan/updated",
+        turnId: "turn_child_1",
         providerThreadId: "child_provider_1",
         providerParentThreadId: "provider_parent",
       }),

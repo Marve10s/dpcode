@@ -94,11 +94,7 @@ describe("resolveAppModelSelection", () => {
 
   it("resolves display names through the shared resolver", () => {
     expect(
-      resolveAppModelSelection(
-        "codex",
-        { codex: [], claudeAgent: [], gemini: [] },
-        "GPT-5.3 Codex",
-      ),
+      resolveAppModelSelection("codex", { codex: [], claudeAgent: [], gemini: [] }, "GPT-5.3"),
     ).toBe("gpt-5.3-codex");
   });
 

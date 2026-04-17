@@ -3,7 +3,14 @@ import type { ProviderKind } from "./orchestration";
 
 export const CODEX_REASONING_EFFORT_OPTIONS = ["xhigh", "high", "medium", "low"] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORT_OPTIONS)[number];
-export const CLAUDE_CODE_EFFORT_OPTIONS = ["low", "medium", "high", "max", "ultrathink"] as const;
+export const CLAUDE_CODE_EFFORT_OPTIONS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultrathink",
+] as const;
 export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_OPTIONS)[number];
 export const GEMINI_THINKING_LEVEL_OPTIONS = ["LOW", "HIGH"] as const;
 export type GeminiThinkingLevel = (typeof GEMINI_THINKING_LEVEL_OPTIONS)[number];
@@ -98,7 +105,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     },
     {
       slug: "gpt-5.3-codex",
-      name: "GPT-5.3 Codex",
+      name: "GPT-5.3",
       capabilities: {
         reasoningEffortLevels: [
           { value: "xhigh", label: "Extra High" },
@@ -113,7 +120,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     },
     {
       slug: "gpt-5.3-codex-spark",
-      name: "GPT-5.3 Codex Spark",
+      name: "GPT-5.3 Spark",
       capabilities: {
         reasoningEffortLevels: [
           { value: "xhigh", label: "Extra High" },
@@ -128,7 +135,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     },
     {
       slug: "gpt-5.2-codex",
-      name: "GPT-5.2 Codex",
+      name: "GPT-5.2",
       capabilities: {
         reasoningEffortLevels: [
           { value: "xhigh", label: "Extra High" },
@@ -158,6 +165,23 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     },
   ],
   claudeAgent: [
+    {
+      slug: "claude-opus-4-7",
+      name: "Claude Opus 4.7",
+      capabilities: {
+        reasoningEffortLevels: [
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High", isDefault: true },
+          { value: "xhigh", label: "Extra High" },
+          { value: "max", label: "Max" },
+          { value: "ultrathink", label: "Ultrathink" },
+        ],
+        supportsFastMode: true,
+        supportsThinkingToggle: false,
+        promptInjectedEffortLevels: ["ultrathink"],
+      },
+    },
     {
       slug: "claude-opus-4-6",
       name: "Claude Opus 4.6",
@@ -351,7 +375,10 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
   claudeAgent: {
-    opus: "claude-opus-4-6",
+    opus: "claude-opus-4-7",
+    "opus-4.7": "claude-opus-4-7",
+    "claude-opus-4.7": "claude-opus-4-7",
+    "claude-opus-4-7-20260416": "claude-opus-4-7",
     "opus-4.6": "claude-opus-4-6",
     "claude-opus-4.6": "claude-opus-4-6",
     "claude-opus-4-6-20251117": "claude-opus-4-6",
@@ -406,7 +433,7 @@ export const MODEL_CAPABILITIES_INDEX = Object.fromEntries(
 // ── Provider display names ────────────────────────────────────────────
 
 export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
-  codex: "Codex",
+  codex: "OpenAI",
   claudeAgent: "Claude",
   gemini: "Gemini",
 };

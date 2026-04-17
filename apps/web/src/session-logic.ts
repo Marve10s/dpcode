@@ -34,7 +34,7 @@ export const PROVIDER_OPTIONS: Array<{
   label: string;
   available: boolean;
 }> = [
-  { value: "codex", label: "Codex", available: true },
+  { value: "codex", label: "OpenAI", available: true },
   { value: "claudeAgent", label: "Claude", available: true },
   { value: "gemini", label: "Gemini", available: true },
 ];
@@ -401,16 +401,15 @@ export function deriveActivePlanState(
   latestTurnId: TurnId | undefined,
 ): ActivePlanState | null {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const candidates = ordered.filter((activity) => {
-    if (activity.kind !== "turn.plan.updated") {
-      return false;
-    }
-    if (!latestTurnId) {
-      return true;
-    }
-    return activity.turnId === latestTurnId;
-  });
-  const latest = candidates.at(-1);
+  const allPlanActivities = ordered.filter((activity) => activity.kind === "turn.plan.updated");
+  // Prefer the current turn's plan, but keep the most recent prior plan visible
+  // so plan/task state survives follow-up turns that don't emit a new plan update.
+  const latest =
+    (latestTurnId
+      ? allPlanActivities.filter((activity) => activity.turnId === latestTurnId).at(-1)
+      : undefined) ??
+    allPlanActivities.at(-1) ??
+    null;
   if (!latest) {
     return null;
   }
@@ -616,7 +615,12 @@ export function deriveWorkLogEntries(
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
-    .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
+    .filter((activity) =>
+      latestTurnId
+        ? activity.turnId === latestTurnId ||
+          (activity.kind === "context-compaction" && activity.turnId === null)
+        : true,
+    )
     .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => !isCollabAgentToolActivity(activity))
     .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")

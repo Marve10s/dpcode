@@ -38,12 +38,17 @@ type ComposerSnapshot = {
 
 type SlashCommandItem = Extract<ComposerCommandItem, { type: "slash-command" }>;
 
+function wasPromptReplacementApplied(result: number | false): boolean {
+  return result !== false;
+}
+
 export function useComposerSlashCommands(input: {
   activeProject: Project | undefined;
   activeThread: Thread | undefined;
   activeRootBranch: string | null;
   isServerThread: boolean;
   supportsFastSlashCommand: boolean;
+  canOfferCompactCommand: boolean;
   supportsTextNativeReviewCommand: boolean;
   fastModeEnabled: boolean;
   providerNativeCommands: readonly ProviderNativeCommandDescriptor[];
@@ -95,6 +100,7 @@ export function useComposerSlashCommands(input: {
     activeRootBranch,
     isServerThread,
     supportsFastSlashCommand,
+    canOfferCompactCommand,
     supportsTextNativeReviewCommand,
     fastModeEnabled,
     providerNativeCommands,
@@ -118,10 +124,60 @@ export function useComposerSlashCommands(input: {
   const availableBuiltInSlashCommands = getAvailableComposerSlashCommands({
     provider: selectedProvider,
     supportsFastSlashCommand,
+    canOfferCompactCommand,
     canOfferReviewCommand: true,
     canOfferForkCommand: true,
     providerNativeCommandNames,
   });
+
+  const compactCodexThread = useCallback(async (): Promise<boolean> => {
+    const api = readNativeApi();
+    if (
+      !api ||
+      selectedProvider !== "codex" ||
+      !isServerThread ||
+      !activeThread?.session ||
+      activeThread.session.status === "closed"
+    ) {
+      toastManager.add({
+        type: "warning",
+        title: "Compact is unavailable",
+        description: "Open an active OpenAI server thread before compacting context.",
+      });
+      return false;
+    }
+
+    try {
+      void api.provider
+        .compactThread({
+          threadId: activeThread.id,
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not compact thread",
+            description:
+              error instanceof Error
+                ? error.message
+                : "An error occurred while compacting context.",
+          });
+        });
+      toastManager.add({
+        type: "success",
+        title: "Compaction started",
+        description: "OpenAI is compacting the current thread context.",
+      });
+      return true;
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not compact thread",
+        description:
+          error instanceof Error ? error.message : "An error occurred while compacting context.",
+      });
+      return false;
+    }
+  }, [activeThread, isServerThread, selectedProvider]);
 
   const setFastModeFromSlashCommand = useCallback(
     (enabled: boolean) => {
@@ -443,6 +499,11 @@ export function useComposerSlashCommands(input: {
         await handleClearConversation();
         return true;
       }
+      if (slashInvocation.command === "compact") {
+        editorActions.clearComposerSlashDraft();
+        await compactCodexThread();
+        return true;
+      }
       if (slashInvocation.command === "plan" || slashInvocation.command === "default") {
         await handleInteractionModeChange(slashInvocation.command === "plan" ? "plan" : "default");
         editorActions.clearComposerSlashDraft();
@@ -532,6 +593,7 @@ export function useComposerSlashCommands(input: {
     [
       availableBuiltInSlashCommands,
       checkClaudeFastSlashCommandAvailability,
+      compactCodexThread,
       createForkThreadFromSlashCommand,
       editorActions,
       handleClearConversation,
@@ -565,7 +627,7 @@ export function useComposerSlashCommands(input: {
           replacement,
           { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
         );
-        if (applied) {
+        if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
         }
         return;
@@ -578,17 +640,28 @@ export function useComposerSlashCommands(input: {
 
       if (item.command === "clear") {
         const applied = clearSlashCommandFromComposer();
-        if (applied) {
+        if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
         }
         void handleClearConversation();
         return;
       }
 
+      if (item.command === "compact") {
+        const applied = clearSlashCommandFromComposer();
+        if (!wasPromptReplacementApplied(applied)) {
+          return;
+        }
+        editorActions.setComposerHighlightedItemId(null);
+        void compactCodexThread();
+        editorActions.scheduleComposerFocus();
+        return;
+      }
+
       if (item.command === "plan" || item.command === "default") {
         void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
         const applied = clearSlashCommandFromComposer();
-        if (applied) {
+        if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
         }
         return;
@@ -602,7 +675,7 @@ export function useComposerSlashCommands(input: {
           replacement,
           { expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd) },
         );
-        if (applied) {
+        if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
         }
         return;
@@ -610,7 +683,7 @@ export function useComposerSlashCommands(input: {
 
       if (item.command === "status") {
         const applied = clearSlashCommandFromComposer();
-        if (applied) {
+        if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
           setIsSlashStatusDialogOpen(true);
           editorActions.scheduleComposerFocus();
@@ -620,7 +693,7 @@ export function useComposerSlashCommands(input: {
 
       if (item.command === "fast") {
         const applied = clearSlashCommandFromComposer();
-        if (!applied) {
+        if (!wasPromptReplacementApplied(applied)) {
           return;
         }
         editorActions.setComposerHighlightedItemId(null);
@@ -643,13 +716,13 @@ export function useComposerSlashCommands(input: {
             replacement,
             { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
           );
-          if (applied) {
+          if (wasPromptReplacementApplied(applied)) {
             editorActions.setComposerHighlightedItemId(null);
           }
           return;
         }
         const applied = clearSlashCommandFromComposer();
-        if (!applied) {
+        if (!wasPromptReplacementApplied(applied)) {
           return;
         }
         editorActions.setComposerHighlightedItemId(null);
@@ -660,7 +733,7 @@ export function useComposerSlashCommands(input: {
 
       if (item.command === "fork") {
         const applied = clearSlashCommandFromComposer();
-        if (!applied) {
+        if (!wasPromptReplacementApplied(applied)) {
           return;
         }
         editorActions.setComposerHighlightedItemId(null);
@@ -669,6 +742,7 @@ export function useComposerSlashCommands(input: {
       }
     },
     [
+      compactCodexThread,
       editorActions,
       handleClearConversation,
       handleInteractionModeChange,

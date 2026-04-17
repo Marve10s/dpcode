@@ -4,7 +4,6 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
-  Options as ClaudeQueryOptions,
   PermissionMode,
   PermissionResult,
   SDKMessage,
@@ -24,6 +23,8 @@ import { ServerConfig } from "../../config.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
 import { makeClaudeAdapterLive, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+
+type CreateClaudeQueryInput = Parameters<NonNullable<ClaudeAdapterLiveOptions["createQuery"]>>[0];
 
 class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   private readonly queue: Array<SDKMessage> = [];
@@ -96,6 +97,14 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     return [];
   };
 
+  readonly supportedModels = async (): Promise<[]> => {
+    return [];
+  };
+
+  readonly supportedAgents = async (): Promise<[]> => {
+    return [];
+  };
+
   readonly close = (): void => {
     this.closeCalls += 1;
     this.finish();
@@ -142,12 +151,7 @@ function makeHarness(config?: {
   readonly baseDir?: string;
 }) {
   const query = new FakeClaudeQuery();
-  let createInput:
-    | {
-        readonly prompt: AsyncIterable<SDKUserMessage>;
-        readonly options: ClaudeQueryOptions;
-      }
-    | undefined;
+  let createInput: CreateClaudeQueryInput | undefined;
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
     createQuery: (input) => {
@@ -213,7 +217,7 @@ async function readFirstPromptText(
     return undefined;
   }
   const content = next.value.message.content[0];
-  if (!content || content.type !== "text") {
+  if (!content || typeof content === "string" || content.type !== "text") {
     return undefined;
   }
   return content.text;
@@ -350,6 +354,31 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "max");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards xhigh effort for Claude Opus 4.7", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        modelSelection: {
+          provider: "claudeAgent",
+          model: "claude-opus-4-7",
+          options: {
+            effort: "xhigh",
+          },
+        },
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.effort, "xhigh");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

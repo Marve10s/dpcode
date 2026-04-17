@@ -1,6 +1,11 @@
+// FILE: ProviderModelPicker.tsx
+// Purpose: Renders the composer provider/model menu and supports controlled opening for shortcuts.
+// Layer: Chat composer presentation
+// Depends on: provider availability metadata, shared menu primitives, and picker trigger styling.
+
 import { type ModelSlug, type ProviderKind, type ServerProviderStatus } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { type ProviderPickerKind, PROVIDER_OPTIONS } from "../../session-logic";
 import {
   Menu,
@@ -17,9 +22,9 @@ import {
 } from "../ui/menu";
 import { ClaudeAI, Gemini, Icon, OpenAI } from "../Icons";
 import { cn } from "~/lib/utils";
-import { readNativeApi } from "~/nativeApi";
-import { mergeProviderModelOptions } from "~/providerModelOptions";
 import { PickerTriggerButton } from "./PickerTriggerButton";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ShortcutKbd } from "../ui/shortcut-kbd";
 
 function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
   value: ProviderKind;
@@ -87,62 +92,39 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   activeProviderIconClassName?: string;
   compact?: boolean;
   disabled?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  shortcutLabel?: string | null;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
 }) {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [runtimeGeminiModels, setRuntimeGeminiModels] = useState<
-    ReadonlyArray<{ slug: string; name: string }>
-  >([]);
-  const runtimeGeminiModelsRequestedRef = useRef(false);
-  const runtimeGeminiModelsEnabled =
-    props.providers?.find((entry) => entry.provider === "gemini")?.authStatus !== "unauthenticated";
-  useEffect(() => {
-    if (!isMenuOpen || !runtimeGeminiModelsEnabled || runtimeGeminiModelsRequestedRef.current) {
-      return;
-    }
-
-    const api = readNativeApi();
-    if (!api) {
-      return;
-    }
-
-    runtimeGeminiModelsRequestedRef.current = true;
-    let cancelled = false;
-
-    void api.provider
-      .listModels({ provider: "gemini" })
-      .then((result) => {
-        if (!cancelled) {
-          setRuntimeGeminiModels(result.models);
-        }
-      })
-      .catch(() => {
-        runtimeGeminiModelsRequestedRef.current = false;
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isMenuOpen, runtimeGeminiModelsEnabled]);
-  const modelOptionsByProvider = useMemo(
-    () => ({
-      ...props.modelOptionsByProvider,
-      gemini: mergeProviderModelOptions(props.modelOptionsByProvider.gemini, runtimeGeminiModels),
-    }),
-    [props.modelOptionsByProvider, runtimeGeminiModels],
-  );
+  const { onOpenChange, open } = props;
+  const [uncontrolledMenuOpen, setUncontrolledMenuOpen] = useState(false);
   const activeProvider = props.lockedProvider ?? props.provider;
-  const selectedProviderOptions = modelOptionsByProvider[activeProvider];
+  const isMenuOpen = open ?? uncontrolledMenuOpen;
+  const selectedProviderOptions = props.modelOptionsByProvider[activeProvider];
   const selectedModelLabel =
     selectedProviderOptions.find((option) => option.slug === props.model)?.name ?? props.model;
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[activeProvider];
+  const setMenuOpen = useCallback(
+    (nextOpen: boolean) => {
+      if (open === undefined) {
+        setUncontrolledMenuOpen(nextOpen);
+      }
+      onOpenChange?.(nextOpen);
+    },
+    [onOpenChange, open],
+  );
   const handleModelChange = (provider: ProviderKind, value: string) => {
     if (props.disabled) return;
     if (!value) return;
-    const resolvedModel = resolveSelectableModel(provider, value, modelOptionsByProvider[provider]);
+    const resolvedModel = resolveSelectableModel(
+      provider,
+      value,
+      props.modelOptionsByProvider[provider],
+    );
     if (!resolvedModel) return;
     props.onProviderModelChange(provider, resolvedModel);
-    setIsMenuOpen(false);
+    setMenuOpen(false);
   };
 
   return (
@@ -150,33 +132,74 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       open={isMenuOpen}
       onOpenChange={(open) => {
         if (props.disabled) {
-          setIsMenuOpen(false);
+          setMenuOpen(false);
           return;
         }
-        setIsMenuOpen(open);
+        setMenuOpen(open);
       }}
     >
-      <MenuTrigger
-        render={
-          <PickerTriggerButton
-            disabled={props.disabled ?? false}
-            compact={props.compact ?? false}
-            icon={
-              <ProviderIcon
-                aria-hidden="true"
-                className={cn(
-                  "size-3.5 shrink-0",
-                  providerIconClassName(activeProvider, "text-muted-foreground/70"),
-                  props.activeProviderIconClassName,
-                )}
+      {props.shortcutLabel ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <MenuTrigger
+                render={
+                  <PickerTriggerButton
+                    disabled={props.disabled ?? false}
+                    compact={props.compact ?? false}
+                    icon={
+                      <ProviderIcon
+                        aria-hidden="true"
+                        className={cn(
+                          "size-3.5 shrink-0",
+                          providerIconClassName(activeProvider, "text-muted-foreground/70"),
+                          props.activeProviderIconClassName,
+                        )}
+                      />
+                    }
+                    label={selectedModelLabel}
+                  />
+                }
               />
             }
-            label={selectedModelLabel}
-          />
-        }
-      >
-        <span className="sr-only">{selectedModelLabel}</span>
-      </MenuTrigger>
+          >
+            <span className="sr-only">{selectedModelLabel}</span>
+          </TooltipTrigger>
+          {!isMenuOpen ? (
+            <TooltipPopup side="top" sideOffset={6}>
+              <span className="inline-flex items-center gap-2 px-1 py-0.5">
+                <span>Change model</span>
+                <ShortcutKbd
+                  shortcutLabel={props.shortcutLabel}
+                  className="h-4 min-w-4 px-1 text-[length:var(--app-font-size-ui-2xs,9px)] text-muted-foreground"
+                />
+              </span>
+            </TooltipPopup>
+          ) : null}
+        </Tooltip>
+      ) : (
+        <MenuTrigger
+          render={
+            <PickerTriggerButton
+              disabled={props.disabled ?? false}
+              compact={props.compact ?? false}
+              icon={
+                <ProviderIcon
+                  aria-hidden="true"
+                  className={cn(
+                    "size-3.5 shrink-0",
+                    providerIconClassName(activeProvider, "text-muted-foreground/70"),
+                    props.activeProviderIconClassName,
+                  )}
+                />
+              }
+              label={selectedModelLabel}
+            />
+          }
+        >
+          <span className="sr-only">{selectedModelLabel}</span>
+        </MenuTrigger>
+      )}
       <MenuPopup align="start">
         {props.lockedProvider !== null ? (
           <MenuGroup>
@@ -184,11 +207,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               value={props.model}
               onValueChange={(value) => handleModelChange(props.lockedProvider!, value)}
             >
-              {modelOptionsByProvider[props.lockedProvider].map((modelOption) => (
+              {props.modelOptionsByProvider[props.lockedProvider].map((modelOption) => (
                 <MenuRadioItem
                   key={`${props.lockedProvider}:${modelOption.slug}`}
                   value={modelOption.slug}
-                  onClick={() => setIsMenuOpen(false)}
+                  onClick={() => setMenuOpen(false)}
                 >
                   {modelOption.name}
                 </MenuRadioItem>
@@ -238,11 +261,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                         value={props.provider === option.value ? props.model : ""}
                         onValueChange={(value) => handleModelChange(option.value, value)}
                       >
-                        {modelOptionsByProvider[option.value].map((modelOption) => (
+                        {props.modelOptionsByProvider[option.value].map((modelOption) => (
                           <MenuRadioItem
                             key={`${option.value}:${modelOption.slug}`}
                             value={modelOption.slug}
-                            onClick={() => setIsMenuOpen(false)}
+                            onClick={() => setMenuOpen(false)}
                           >
                             {modelOption.name}
                           </MenuRadioItem>

@@ -12,8 +12,8 @@ const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
   ],
   codex: [
-    { slug: "gpt-5-codex", name: "GPT-5 Codex" },
-    { slug: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    { slug: "gpt-5-codex", name: "GPT-5" },
+    { slug: "gpt-5.3-codex", name: "GPT-5.3" },
   ],
   gemini: [
     { slug: "auto-gemini-3", name: "Auto Gemini 3" },
@@ -68,7 +68,7 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text).toContain("Codex");
+        expect(text).toContain("OpenAI");
         expect(text).toContain("Claude");
         expect(text).not.toContain("Claude Sonnet 4.6");
       });
@@ -91,7 +91,7 @@ describe("ProviderModelPicker", () => {
         const text = document.body.textContent ?? "";
         expect(text).toContain("Claude Sonnet 4.6");
         expect(text).toContain("Claude Haiku 4.5");
-        expect(text).not.toContain("Codex");
+        expect(text).not.toContain("OpenAI");
       });
     } finally {
       await mounted.cleanup();
@@ -146,7 +146,7 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text).toContain("Codex");
+        expect(text).toContain("OpenAI");
         expect(text).toContain("Claude");
         expect(text).toContain("Sign in");
       });

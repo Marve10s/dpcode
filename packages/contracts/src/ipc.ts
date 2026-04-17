@@ -60,12 +60,17 @@ import type {
   OrchestrationGetTurnDiffResult,
   OrchestrationEvent,
   OrchestrationReadModel,
+  OrchestrationShellStreamItem,
+  OrchestrationSubscribeThreadInput,
+  OrchestrationThreadStreamItem,
 } from "./orchestration";
 import { EditorId } from "./editor";
 import type { ThreadId } from "./baseSchemas";
 import type {
   ProviderComposerCapabilities,
   ProviderGetComposerCapabilitiesInput,
+  ProviderListAgentsInput,
+  ProviderListAgentsResult,
   ProviderListCommandsInput,
   ProviderListCommandsResult,
   ProviderListModelsInput,
@@ -77,6 +82,7 @@ import type {
   ProviderReadPluginInput,
   ProviderReadPluginResult,
 } from "./providerDiscovery";
+import type { ProviderCompactThreadInput } from "./provider";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -306,11 +312,13 @@ export interface NativeApi {
     getComposerCapabilities: (
       input: ProviderGetComposerCapabilitiesInput,
     ) => Promise<ProviderComposerCapabilities>;
+    compactThread: (input: ProviderCompactThreadInput) => Promise<void>;
     listCommands: (input: ProviderListCommandsInput) => Promise<ProviderListCommandsResult>;
     listSkills: (input: ProviderListSkillsInput) => Promise<ProviderListSkillsResult>;
     listPlugins: (input: ProviderListPluginsInput) => Promise<ProviderListPluginsResult>;
     readPlugin: (input: ProviderReadPluginInput) => Promise<ProviderReadPluginResult>;
     listModels: (input: ProviderListModelsInput) => Promise<ProviderListModelsResult>;
+    listAgents: (input: ProviderListAgentsInput) => Promise<ProviderListAgentsResult>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;
@@ -321,7 +329,13 @@ export interface NativeApi {
       input: OrchestrationGetFullThreadDiffInput,
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
     replayEvents: (fromSequenceExclusive: number) => Promise<OrchestrationEvent[]>;
+    subscribeShell: () => Promise<void>;
+    unsubscribeShell: () => Promise<void>;
+    subscribeThread: (input: OrchestrationSubscribeThreadInput) => Promise<void>;
+    unsubscribeThread: (input: OrchestrationSubscribeThreadInput) => Promise<void>;
     onDomainEvent: (callback: (event: OrchestrationEvent) => void) => () => void;
+    onShellEvent: (callback: (event: OrchestrationShellStreamItem) => void) => () => void;
+    onThreadEvent: (callback: (event: OrchestrationThreadStreamItem) => void) => () => void;
   };
   browser: {
     open: (input: BrowserOpenInput) => Promise<ThreadBrowserState>;

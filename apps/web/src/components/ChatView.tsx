@@ -21,7 +21,6 @@ import {
   type ResolvedKeybindingsConfig,
   type ServerProviderStatus,
   ThreadId,
-  type ThreadId as ThreadIdType,
   type TurnId,
   type EditorId,
   type KeybindingCommand,
@@ -34,6 +33,7 @@ import {
   getModelCapabilities,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import {
   buildPromptThreadTitleFallback,
   GENERIC_CHAT_THREAD_TITLE,
@@ -51,12 +51,10 @@ import { PiArrowBendDownRight } from "react-icons/pi";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import {
-  gitBranchesQueryOptions,
-  gitCreateDetachedWorktreeMutationOptions,
-} from "~/lib/gitReactQuery";
+import { gitCreateWorktreeMutationOptions, gitBranchesQueryOptions } from "~/lib/gitReactQuery";
 import { resolveProviderDiscoveryCwd } from "~/lib/providerDiscovery";
 import {
+  providerAgentsQueryOptions,
   providerComposerCapabilitiesQueryOptions,
   providerCommandsQueryOptions,
   providerModelsQueryOptions,
@@ -70,10 +68,12 @@ import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
+import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
+import { buildThreadBreadcrumbs, enrichSubagentWorkEntries } from "./ChatView.logic";
 import {
-  humanizeSubagentStatus,
-  resolveSubagentPresentationForThread,
-} from "../lib/subagentPresentation";
+  createRelevantWorkLogThreadsSelector,
+  createThreadLineageSelector,
+} from "./ChatView.selectors";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -106,7 +106,6 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
   formatElapsed,
-  type WorkLogEntry,
 } from "../session-logic";
 import {
   buildPendingUserInputAnswers,
@@ -116,6 +115,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import { useStore } from "../store";
+import { getThreadFromState } from "../threadDerivation";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -129,7 +129,6 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
-  type Thread,
   type TurnDiffSummary,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
@@ -139,7 +138,11 @@ import { useThreadHandoff } from "../hooks/useThreadHandoff";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import BranchToolbar from "./BranchToolbar";
 import { ThreadWorktreeHandoffDialog } from "./ThreadWorktreeHandoffDialog";
-import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
+import {
+  formatShortcutLabel,
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
+} from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import TerminalWorkspaceTabs from "./TerminalWorkspaceTabs";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -270,12 +273,11 @@ import {
   resolveHandoffTargetProvider,
   resolveThreadHandoffBadgeLabel,
 } from "../lib/threadHandoff";
-import { resolveThreadEnvironmentMode } from "../lib/threadEnvironment";
 import {
-  buildModelSelection,
-  buildNextProviderOptions,
-  mergeProviderModelOptions,
-} from "../providerModelOptions";
+  resolveDiffEnvironmentState,
+  resolveThreadEnvironmentMode,
+} from "../lib/threadEnvironment";
+import { buildModelSelection, buildNextProviderOptions } from "../providerModelOptions";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -292,6 +294,21 @@ function eventTargetsComposer(
   if (!composerForm) return false;
   const target = event.target;
   return target instanceof Node ? composerForm.contains(target) : false;
+}
+
+function canHandleComposerPickerShortcut(
+  event: globalThis.KeyboardEvent,
+  composerForm: HTMLFormElement | null,
+): boolean {
+  if (!composerForm) return false;
+  if (eventTargetsComposer(event, composerForm)) return true;
+  const target = event.target;
+  return (
+    target === document.body ||
+    target === document.documentElement ||
+    document.activeElement === document.body ||
+    document.activeElement === document.documentElement
+  );
 }
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProviderStatus[] = [];
@@ -354,6 +371,62 @@ function warnVoiceGuard(event: string, details?: Record<string, unknown>) {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Turn a raw model slug into a display label. */
+function formatModelSlug(slug: string): string {
+  return slug
+    .replace(/^gpt-/i, "GPT-")
+    .replace(/^claude-/i, "Claude ")
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function mergeDynamicModelOptions(input: {
+  provider: ProviderKind;
+  staticOptions: ReadonlyArray<{ slug: string; name: string; isCustom?: boolean }>;
+  dynamicModels: ReadonlyArray<{ slug: string; name?: string | null }>;
+}): ReadonlyArray<{ slug: string; name: string; isCustom?: boolean }> {
+  const staticNameBySlug = new Map(input.staticOptions.map((model) => [model.slug, model.name]));
+  const dynamicNormalizedSlugs = new Set<string>();
+  const normalizedDynamicOptions: Array<{ slug: string; name: string }> = [];
+
+  for (const dynamicModel of input.dynamicModels) {
+    const rawName = dynamicModel.name?.trim() ?? "";
+    const isClaudeDefaultAlias =
+      input.provider === "claudeAgent" &&
+      (rawName.toLowerCase() === "default (recommended)" ||
+        rawName.toLowerCase() === "default recommended" ||
+        dynamicModel.slug.trim().toLowerCase() === "default");
+    if (isClaudeDefaultAlias) {
+      continue;
+    }
+
+    const normalizedSlug =
+      normalizeModelSlug(dynamicModel.slug, input.provider) ?? dynamicModel.slug;
+    if (dynamicNormalizedSlugs.has(normalizedSlug)) {
+      continue;
+    }
+    dynamicNormalizedSlugs.add(normalizedSlug);
+    normalizedDynamicOptions.push({
+      slug: normalizedSlug,
+      name:
+        staticNameBySlug.get(normalizedSlug) ??
+        dynamicModel.name ??
+        formatModelSlug(normalizedSlug),
+    });
+  }
+
+  const customOnlyModels = input.staticOptions.filter(
+    (model) => "isCustom" in model && model.isCustom && !dynamicNormalizedSlugs.has(model.slug),
+  );
+
+  const orderedDynamicOptions =
+    input.provider === "claudeAgent"
+      ? [...normalizedDynamicOptions].reverse()
+      : normalizedDynamicOptions;
+
+  return [...orderedDynamicOptions, ...customOnlyModels];
 }
 
 function skillMentionPrefix(provider: string): string {
@@ -486,196 +559,6 @@ const terminalContextIdListsEqual = (
 ): boolean =>
   contexts.length === ids.length && contexts.every((context, index) => context.id === ids[index]);
 
-interface ThreadBreadcrumb {
-  threadId: ThreadIdType;
-  title: string;
-}
-
-function buildThreadBreadcrumbs(
-  threads: ReadonlyArray<Thread>,
-  thread: Pick<Thread, "id" | "parentThreadId"> | null | undefined,
-): ThreadBreadcrumb[] {
-  if (!thread?.parentThreadId) {
-    return [];
-  }
-
-  const threadById = new Map(threads.map((entry) => [entry.id, entry] as const));
-  const breadcrumbs: ThreadBreadcrumb[] = [];
-  const visited = new Set<ThreadIdType>();
-  let currentParentId: ThreadIdType | null = thread.parentThreadId ?? null;
-
-  while (currentParentId && !visited.has(currentParentId)) {
-    visited.add(currentParentId);
-    const parentThread = threadById.get(currentParentId);
-    if (!parentThread) {
-      break;
-    }
-    breadcrumbs.unshift({
-      threadId: parentThread.id,
-      title: parentThread.parentThreadId
-        ? resolveSubagentPresentationForThread({ thread: parentThread, threads }).fullLabel
-        : parentThread.title,
-    });
-    currentParentId = parentThread.parentThreadId ?? null;
-  }
-
-  return breadcrumbs;
-}
-
-function deriveSubagentStatus(thread: Thread | undefined): {
-  isActive: boolean;
-  label: string | undefined;
-} {
-  if (!thread) {
-    return {
-      isActive: false,
-      label: undefined,
-    };
-  }
-
-  if (thread.error || thread.session?.status === "error") {
-    return {
-      isActive: false,
-      label: "Error",
-    };
-  }
-  if (thread.session?.status === "connecting") {
-    return {
-      isActive: true,
-      label: "Connecting",
-    };
-  }
-  if (
-    thread.session?.status === "running" ||
-    hasLiveTurnTailWork({
-      latestTurn: thread.latestTurn,
-      messages: thread.messages,
-      activities: thread.activities,
-      session: thread.session,
-    })
-  ) {
-    return {
-      isActive: true,
-      label: "Running",
-    };
-  }
-  if (thread.session?.status === "closed") {
-    return {
-      isActive: false,
-      label: "Closed",
-    };
-  }
-
-  return {
-    isActive: false,
-    label: thread.session ? "Idle" : undefined,
-  };
-}
-
-function humanizeSubagentRawStatus(rawStatus: string | undefined): string | undefined {
-  return humanizeSubagentStatus(rawStatus);
-}
-
-function localSubagentThreadId(
-  parentThreadId: ThreadIdType,
-  providerThreadId: string,
-): ThreadIdType {
-  return ThreadId.makeUnsafe(`subagent:${parentThreadId}:${providerThreadId}`);
-}
-
-function resolveTimelineSubagentThread(input: {
-  subagent: NonNullable<WorkLogEntry["subagents"]>[number];
-  parentThreadId: ThreadIdType | null;
-  threadById: ReadonlyMap<ThreadIdType, Thread>;
-  threads: ReadonlyArray<Thread>;
-}): Thread | undefined {
-  const directThreadId = input.subagent.resolvedThreadId ?? input.subagent.threadId;
-  if (directThreadId) {
-    const directMatch = input.threadById.get(ThreadId.makeUnsafe(directThreadId));
-    if (directMatch) {
-      return directMatch;
-    }
-  }
-
-  if (input.parentThreadId) {
-    const providerThreadId = input.subagent.providerThreadId ?? input.subagent.threadId;
-    const derivedLocalThreadId = localSubagentThreadId(input.parentThreadId, providerThreadId);
-    const derivedLocalMatch = input.threadById.get(derivedLocalThreadId);
-    if (derivedLocalMatch) {
-      return derivedLocalMatch;
-    }
-
-    if (input.subagent.agentId) {
-      const matchedByAgent = input.threads.find(
-        (thread) =>
-          thread.parentThreadId === input.parentThreadId &&
-          thread.subagentAgentId === input.subagent.agentId,
-      );
-      if (matchedByAgent) {
-        return matchedByAgent;
-      }
-    }
-  }
-
-  if (input.subagent.agentId) {
-    return input.threads.find((thread) => thread.subagentAgentId === input.subagent.agentId);
-  }
-
-  return undefined;
-}
-
-function enrichSubagentWorkEntries(
-  workEntries: ReadonlyArray<WorkLogEntry>,
-  threads: ReadonlyArray<Thread>,
-  parentThreadId: ThreadIdType | null,
-): WorkLogEntry[] {
-  if (workEntries.length === 0) {
-    return [];
-  }
-
-  const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
-
-  return workEntries.map((entry) => {
-    if ((entry.subagents?.length ?? 0) === 0) {
-      return entry;
-    }
-
-    const subagents = entry.subagents!.map((subagent) => {
-      const matchedThread = resolveTimelineSubagentThread({
-        subagent,
-        parentThreadId,
-        threadById,
-        threads,
-      });
-      const status = deriveSubagentStatus(matchedThread);
-      const fallbackStatusLabel = humanizeSubagentRawStatus(subagent.rawStatus);
-      const matchedPresentation =
-        matchedThread !== undefined
-          ? resolveSubagentPresentationForThread({ thread: matchedThread, threads })
-          : null;
-      const nextSubagent = Object.assign({}, subagent);
-      if (matchedThread) {
-        nextSubagent.resolvedThreadId = matchedThread.id;
-      }
-      if (matchedPresentation) {
-        nextSubagent.title = matchedPresentation.fullLabel;
-      }
-      if (status.label ?? fallbackStatusLabel) {
-        nextSubagent.statusLabel = status.label ?? fallbackStatusLabel;
-      }
-      if (status.isActive || fallbackStatusLabel === "Running") {
-        nextSubagent.isActive = true;
-      }
-      return nextSubagent;
-    });
-
-    return {
-      ...entry,
-      subagents,
-    };
-  });
-}
-
 interface ChatViewProps {
   threadId: ThreadId;
   paneScopeId?: string;
@@ -721,9 +604,7 @@ export default function ChatView({
   const removeThreadFromSplitViews = useSplitViewStore((store) => store.removeThreadFromSplitViews);
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();
-  const createDetachedWorktreeMutation = useMutation(
-    gitCreateDetachedWorktreeMutationOptions({ queryClient }),
-  );
+  const createWorktreeMutation = useMutation(gitCreateWorktreeMutationOptions({ queryClient }));
   const composerDraft = useComposerThreadDraft(threadId);
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
@@ -796,7 +677,6 @@ export default function ChatView({
   const draftThread = useComposerDraftStore(
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
-  const allThreads = useStore((store) => store.threads);
   const serverThread = useStore(useMemo(() => createThreadSelector(threadId), [threadId]));
   const fallbackDraftProjectId = draftThread?.projectId ?? null;
   const fallbackDraftProject = useStore(
@@ -835,7 +715,6 @@ export default function ChatView({
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
   const planSidebarOpenOnNextThreadRef = useRef(false);
-  const [nowTick, setNowTick] = useState(() => Date.now());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
   const [pullRequestDialogState, setPullRequestDialogState] =
@@ -860,9 +739,13 @@ export default function ChatView({
     {},
     LastInvokedScriptByProjectSchema,
   );
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
+  const [isTraitsPickerOpen, setIsTraitsPickerOpen] = useState(false);
 
   useEffect(() => {
     setComposerCommandPicker(null);
+    setIsModelPickerOpen(false);
+    setIsTraitsPickerOpen(false);
   }, [threadId]);
   useEffect(() => {
     // Thread-bound handoff dialog state is reset by the dedicated hook.
@@ -1024,9 +907,12 @@ export default function ChatView({
   const activeProject = useStore(
     useMemo(() => createProjectSelector(activeProjectId), [activeProjectId]),
   );
+  const threadLineageThreads = useStore(
+    useMemo(() => createThreadLineageSelector(activeThread?.id ?? null), [activeThread?.id]),
+  );
   const threadBreadcrumbs = useMemo(
-    () => buildThreadBreadcrumbs(allThreads, activeThread),
-    [activeThread, allThreads],
+    () => buildThreadBreadcrumbs(threadLineageThreads, activeThread),
+    [activeThread, threadLineageThreads],
   );
   const resolvedThreadEnvMode = isServerThread
     ? (activeThread?.envMode ?? null)
@@ -1034,6 +920,13 @@ export default function ChatView({
   const resolvedThreadWorktreePath = isServerThread
     ? (activeThread?.worktreePath ?? null)
     : (draftThread?.worktreePath ?? null);
+  const diffEnvironmentState = resolveDiffEnvironmentState({
+    projectCwd: activeProject?.cwd ?? null,
+    envMode: resolvedThreadEnvMode,
+    worktreePath: resolvedThreadWorktreePath,
+  });
+  const diffEnvironmentPending = diffEnvironmentState.pending;
+  const diffDisabledReason = diffEnvironmentState.disabledReason;
   const activeThreadAssociatedWorktree = useMemo(
     () =>
       deriveAssociatedWorktreeMetadata({
@@ -1201,22 +1094,51 @@ export default function ChatView({
   );
   const providerOptionsForDispatch = useMemo(() => getProviderStartOptions(settings), [settings]);
   const selectedModelForPicker = selectedModel;
-  const geminiModelsQuery = useQuery(
+  const claudeDynamicModelsQuery = useQuery(
+    providerModelsQueryOptions({ provider: "claudeAgent" }),
+  );
+  const codexDynamicModelsQuery = useQuery(providerModelsQueryOptions({ provider: "codex" }));
+  const geminiDynamicModelsQuery = useQuery(
     providerModelsQueryOptions({
       provider: "gemini",
       enabled: selectedProvider === "gemini" || lockedProvider === "gemini",
     }),
   );
+  const claudeDynamicAgentsQuery = useQuery(
+    providerAgentsQueryOptions({ provider: "claudeAgent" }),
+  );
+  const codexDynamicAgentsQuery = useQuery(providerAgentsQueryOptions({ provider: "codex" }));
   const modelOptionsByProvider = useMemo(() => {
-    const staticModelOptionsByProvider = getCustomModelOptionsByProvider(settings);
-    return {
-      ...staticModelOptionsByProvider,
-      gemini: mergeProviderModelOptions(
-        staticModelOptionsByProvider.gemini,
-        geminiModelsQuery.data?.models ?? [],
-      ),
+    const staticOptions = getCustomModelOptionsByProvider(settings);
+    const result = { ...staticOptions };
+
+    const dynamicSources: Record<ProviderKind, typeof claudeDynamicModelsQuery.data> = {
+      claudeAgent: claudeDynamicModelsQuery.data,
+      codex: codexDynamicModelsQuery.data,
+      gemini: geminiDynamicModelsQuery.data,
     };
-  }, [geminiModelsQuery.data?.models, settings]);
+
+    for (const provider of ["claudeAgent", "codex", "gemini"] as const) {
+      const dynamicModels = dynamicSources[provider]?.models;
+      if (dynamicModels && dynamicModels.length > 0) {
+        result[provider] = mergeDynamicModelOptions({
+          provider,
+          staticOptions: staticOptions[provider],
+          dynamicModels: dynamicModels.map((model) => ({
+            slug: model.slug,
+            name: model.name,
+          })),
+        });
+      }
+    }
+
+    return result;
+  }, [
+    settings,
+    claudeDynamicModelsQuery.data,
+    codexDynamicModelsQuery.data,
+    geminiDynamicModelsQuery.data,
+  ]);
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByProvider[selectedProvider];
     return currentOptions.some((option) => option.slug === selectedModelForPicker)
@@ -1241,14 +1163,35 @@ export default function ChatView({
     [lockedProvider, modelOptionsByProvider],
   );
   const phase = derivePhase(activeThread?.session ?? null);
+  const rawWorkLogEntries = useMemo(
+    () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
+    [activeLatestTurn?.turnId, threadActivities],
+  );
+  const hasWorkLogSubagents = useMemo(
+    () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
+    [rawWorkLogEntries],
+  );
+  const relevantWorkLogThreads = useStore(
+    useMemo(
+      () =>
+        createRelevantWorkLogThreadsSelector({
+          workEntries: rawWorkLogEntries,
+          parentThreadId: activeThread?.id ?? null,
+          enabled: hasWorkLogSubagents,
+        }),
+      [activeThread?.id, hasWorkLogSubagents, rawWorkLogEntries],
+    ),
+  );
   const workLogEntries = useMemo(
     () =>
-      enrichSubagentWorkEntries(
-        deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
-        allThreads,
-        activeThread?.id ?? null,
-      ),
-    [activeLatestTurn?.turnId, activeThread?.id, allThreads, threadActivities],
+      hasWorkLogSubagents
+        ? enrichSubagentWorkEntries(
+            rawWorkLogEntries,
+            relevantWorkLogThreads,
+            activeThread?.id ?? null,
+          )
+        : rawWorkLogEntries,
+    [activeThread?.id, hasWorkLogSubagents, rawWorkLogEntries, relevantWorkLogThreads],
   );
   const latestTurnHasToolActivity = useMemo(
     () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
@@ -1368,6 +1311,7 @@ export default function ChatView({
       sidebarPlanSourceThreadProposedPlans,
     ],
   );
+  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const activePlan = useMemo(
     () =>
       latestTurnSettled
@@ -1417,7 +1361,6 @@ export default function ChatView({
   const [keepSettledActiveTurnLayout, setKeepSettledActiveTurnLayout] = useState(false);
   const previousActiveTurnLayoutLiveRef = useRef(activeTurnLayoutLive);
   const previousActiveTurnLayoutKeyRef = useRef<string | null>(null);
-  const nowIso = new Date(nowTick).toISOString();
   const activeWorkStartedAt = hasLiveTurnTail
     ? (activeLatestTurn?.startedAt ?? localDispatch?.startedAt ?? null)
     : deriveActiveWorkStartedAt(
@@ -1887,6 +1830,37 @@ export default function ChatView({
       selectedMentionCount: selectedComposerMentions.length,
       interactionMode,
     });
+  const dynamicAgents = useMemo(() => {
+    if (selectedProvider === "claudeAgent") {
+      return (claudeDynamicAgentsQuery.data?.agents ?? []).map((agent) => {
+        const next: { name: string; displayName: string; description?: string } = {
+          name: agent.name,
+          displayName: agent.displayName,
+        };
+        if (agent.description) {
+          next.description = agent.description;
+        }
+        return next;
+      });
+    }
+    if (selectedProvider === "codex") {
+      return (codexDynamicAgentsQuery.data?.agents ?? []).map((agent) => {
+        const next: { name: string; displayName: string; description?: string } = {
+          name: agent.name,
+          displayName: agent.displayName,
+        };
+        if (agent.description) {
+          next.description = agent.description;
+        }
+        return next;
+      });
+    }
+    return [];
+  }, [
+    selectedProvider,
+    claudeDynamicAgentsQuery.data?.agents,
+    codexDynamicAgentsQuery.data?.agents,
+  ]);
   const normalComposerMenuItems = useComposerCommandMenuItems({
     composerTrigger: effectiveComposerTrigger,
     provider: selectedProvider,
@@ -1896,8 +1870,14 @@ export default function ChatView({
     workspaceEntries,
     searchableModelOptions,
     supportsFastSlashCommand,
+    canOfferCompactCommand:
+      selectedProvider === "codex" &&
+      isServerThread &&
+      activeThread?.session !== null &&
+      activeThread?.session?.status !== "closed",
     canOfferReviewCommand,
     canOfferForkCommand,
+    dynamicAgents,
   });
   const composerMenuItems = useMemo(() => {
     if (composerCommandPicker === "fork-target") {
@@ -2059,7 +2039,37 @@ export default function ChatView({
     () => shortcutLabelForCommand(keybindings, "chat.split"),
     [keybindings],
   );
+  // Composer picker shortcuts are hard-coded in the keydown handler below
+  // (Mod+Shift+M opens the model picker, Mod+Shift+E opens the reasoning picker).
+  // Build their display labels directly so the tooltips match the handler exactly.
+  const modelPickerShortcutLabel = useMemo(
+    () =>
+      formatShortcutLabel({
+        key: "m",
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: true,
+        altKey: false,
+        modKey: true,
+      }),
+    [],
+  );
+  const traitsPickerShortcutLabel = useMemo(
+    () =>
+      formatShortcutLabel({
+        key: "e",
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: true,
+        altKey: false,
+        modKey: true,
+      }),
+    [],
+  );
   const onToggleDiff = useCallback(() => {
+    if (diffEnvironmentPending && !diffOpen) {
+      return;
+    }
     if (onToggleDiffPanel) {
       onToggleDiffPanel();
       return;
@@ -2075,7 +2085,7 @@ export default function ChatView({
           : { ...rest, panel: "diff", diff: "1" };
       },
     });
-  }, [diffOpen, navigate, onToggleDiffPanel, threadId]);
+  }, [diffEnvironmentPending, diffOpen, navigate, onToggleDiffPanel, threadId]);
   const onToggleBrowser = useCallback(() => {
     if (onToggleBrowserPanel) {
       onToggleBrowserPanel();
@@ -2124,7 +2134,7 @@ export default function ChatView({
   const setThreadError = useCallback(
     (targetThreadId: ThreadId | null, error: string | null) => {
       if (!targetThreadId) return;
-      if (useStore.getState().threads.some((thread) => thread.id === targetThreadId)) {
+      if (getThreadFromState(useStore.getState(), targetThreadId)) {
         setStoreThreadError(targetThreadId, error);
         return;
       }
@@ -2149,6 +2159,19 @@ export default function ChatView({
       focusComposer();
     });
   }, [focusComposer]);
+  // Keep the two composer picker menus mutually exclusive so shortcuts always open one surface.
+  const handleModelPickerOpenChange = useCallback((open: boolean) => {
+    setIsModelPickerOpen(open);
+    if (open) {
+      setIsTraitsPickerOpen(false);
+    }
+  }, []);
+  const handleTraitsPickerOpenChange = useCallback((open: boolean) => {
+    setIsTraitsPickerOpen(open);
+    if (open) {
+      setIsModelPickerOpen(false);
+    }
+  }, []);
   const appendVoiceTranscriptToComposer = useCallback(
     (transcript: string) => {
       const nextPrompt = appendVoiceTranscriptToPrompt(promptRef.current, transcript);
@@ -2887,6 +2910,17 @@ export default function ChatView({
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
+  const togglePlanSidebar = useCallback(() => {
+    setPlanSidebarOpen((open) => {
+      if (open) {
+        planSidebarDismissedForTurnRef.current =
+          activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+      } else {
+        planSidebarDismissedForTurnRef.current = null;
+      }
+      return !open;
+    });
+  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
   const setPlanMode = useCallback(
     (enabled: boolean) => {
       handleInteractionModeChange(enabled ? "plan" : "default");
@@ -3307,17 +3341,6 @@ export default function ChatView({
     worktreePath: resolvedThreadWorktreePath,
   });
 
-  useEffect(() => {
-    if (!isWorking) return;
-    setNowTick(Date.now());
-    const timer = window.setInterval(() => {
-      setNowTick(Date.now());
-    }, 1000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [isWorking]);
-
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
       const preparingWorktree = Boolean(options?.preparingWorktree);
@@ -3432,6 +3455,36 @@ export default function ChatView({
         event.stopPropagation();
         void onInterrupt();
         return;
+      }
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      const composerPickerShortcutActive =
+        !isTerminalFocused() &&
+        !isVoiceRecording &&
+        !isVoiceTranscribing &&
+        !isComposerApprovalState &&
+        canHandleComposerPickerShortcut(event, composerFormRef.current);
+      if (
+        composerPickerShortcutActive &&
+        event.shiftKey &&
+        !event.altKey &&
+        event.metaKey === useMetaForMod &&
+        event.ctrlKey === !useMetaForMod
+      ) {
+        const normalizedKey = event.key.toLowerCase();
+        if (normalizedKey === "m") {
+          event.preventDefault();
+          event.stopPropagation();
+          handleModelPickerOpenChange(true);
+          scheduleComposerFocus();
+          return;
+        }
+        if (normalizedKey === "e") {
+          event.preventDefault();
+          event.stopPropagation();
+          handleTraitsPickerOpenChange(true);
+          scheduleComposerFocus();
+          return;
+        }
       }
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
@@ -3599,8 +3652,14 @@ export default function ChatView({
     onSplitSurface,
     isFocusedPane,
     hasLiveTurn,
+    handleModelPickerOpenChange,
+    handleTraitsPickerOpenChange,
+    isComposerApprovalState,
+    isVoiceRecording,
+    isVoiceTranscribing,
     setTerminalWorkspaceTab,
     surfaceMode,
+    scheduleComposerFocus,
     toggleTerminalVisibility,
   ]);
 
@@ -3611,14 +3670,14 @@ export default function ChatView({
     if (voiceProviderStatus?.authStatus === "unauthenticated") {
       toastManager.add({
         type: "error",
-        title: "Sign in to ChatGPT in Codex before using voice notes.",
+        title: "Sign in to ChatGPT for the OpenAI provider before using voice notes.",
       });
       return;
     }
     if (!canStartVoiceNotes) {
       toastManager.add({
         type: "error",
-        title: "Voice notes require a ChatGPT-authenticated Codex session.",
+        title: "Voice notes require a ChatGPT-authenticated OpenAI session.",
       });
       return;
     }
@@ -3725,7 +3784,7 @@ export default function ChatView({
         type: "error",
         title: authExpired ? "Sign in to ChatGPT again" : "Couldn't transcribe voice note",
         description: authExpired
-          ? "Voice transcription uses your ChatGPT session in Codex. That session was rejected, so sign in again there and retry."
+          ? "Voice transcription uses your ChatGPT session for the OpenAI provider. That session was rejected, so sign in again there and retry."
           : description,
         ...(authExpired
           ? {
@@ -4283,16 +4342,16 @@ export default function ChatView({
       // On first message: lock in branch + create worktree if needed.
       if (baseBranchForWorktree) {
         beginLocalDispatch({ preparingWorktree: true });
-        const result = await createDetachedWorktreeMutation.mutateAsync({
+        const result = await createWorktreeMutation.mutateAsync({
           cwd: activeProject.cwd,
-          ref: baseBranchForWorktree,
+          branch: baseBranchForWorktree,
+          newBranch: buildTemporaryWorktreeBranchName(),
         });
         nextThreadBranch = result.worktree.branch;
         nextThreadWorktreePath = result.worktree.path;
         const nextAssociatedWorktree = deriveAssociatedWorktreeMetadata({
+          branch: result.worktree.branch,
           worktreePath: result.worktree.path,
-          associatedWorktreeBranch: null,
-          associatedWorktreeRef: result.worktree.ref,
         });
         if (isServerThread) {
           await api.orchestration.dispatchCommand({
@@ -4333,7 +4392,7 @@ export default function ChatView({
           titleSeed = GENERIC_CHAT_THREAD_TITLE;
         }
       }
-      // Keep the optimistic label short while the server asks Codex for a better summary.
+      // Keep the optimistic label short while the server asks the provider for a better summary.
       const title = buildPromptThreadTitleFallback(titleSeed);
       const threadCreateModelSelection: ModelSelection = buildModelSelection(
         selectedProviderForSend,
@@ -5015,6 +5074,9 @@ export default function ChatView({
     modelOptions: selectedProviderModelOptions,
     prompt,
     includeFastMode: false,
+    open: isTraitsPickerOpen,
+    onOpenChange: handleTraitsPickerOpenChange,
+    shortcutLabel: traitsPickerShortcutLabel,
     onPromptChange: setPromptFromTraits,
   });
   const toggleFastMode = useCallback(() => {
@@ -5215,6 +5277,11 @@ export default function ChatView({
     activeRootBranch,
     isServerThread,
     supportsFastSlashCommand,
+    canOfferCompactCommand:
+      selectedProvider === "codex" &&
+      isServerThread &&
+      activeThread?.session !== null &&
+      activeThread?.session?.status !== "closed",
     supportsTextNativeReviewCommand,
     fastModeEnabled,
     providerNativeCommands,
@@ -5536,6 +5603,9 @@ export default function ChatView({
   }, [forceStickToBottom]);
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
+      if (diffEnvironmentPending) {
+        return;
+      }
       if (onOpenTurnDiffPanel) {
         onOpenTurnDiffPanel(turnId, filePath);
         return;
@@ -5551,7 +5621,7 @@ export default function ChatView({
         },
       });
     },
-    [navigate, onOpenTurnDiffPanel, threadId],
+    [diffEnvironmentPending, navigate, onOpenTurnDiffPanel, threadId],
   );
   const onNavigateToThread = useCallback(
     (nextThreadId: ThreadId) => {
@@ -5632,7 +5702,7 @@ export default function ChatView({
             activeThread.parentThreadId
               ? resolveSubagentPresentationForThread({
                   thread: activeThread,
-                  threads: allThreads,
+                  threads: threadLineageThreads,
                 }).fullLabel
               : activeThread.title
           }
@@ -5661,6 +5731,7 @@ export default function ChatView({
           browserOpen={resolvedBrowserOpen}
           gitCwd={threadWorkspaceCwd}
           diffOpen={resolvedDiffOpen}
+          diffDisabledReason={diffDisabledReason}
           surfaceMode={surfaceMode}
           chatLayoutAction={
             surfaceMode === "single" && onSplitSurface
@@ -5729,7 +5800,6 @@ export default function ChatView({
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
               completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-              nowIso={nowIso}
               expandedWorkGroups={expandedWorkGroups}
               onToggleWorkGroup={onToggleWorkGroup}
               onOpenTurnDiff={onOpenTurnDiff}
@@ -6001,6 +6071,9 @@ export default function ChatView({
                                 lockedProvider={lockedProvider}
                                 providers={providerStatuses}
                                 modelOptionsByProvider={modelOptionsByProvider}
+                                open={isModelPickerOpen}
+                                onOpenChange={handleModelPickerOpenChange}
+                                shortcutLabel={modelPickerShortcutLabel}
                                 {...(composerProviderState.modelPickerIconClassName
                                   ? {
                                       activeProviderIconClassName:
@@ -6036,6 +6109,34 @@ export default function ChatView({
                                   >
                                     <GoTasklist className="size-3.5" />
                                     <span className="sr-only sm:not-sr-only">Plan</span>
+                                  </Button>
+                                </>
+                              ) : null}
+
+                              {activePlan || sidebarProposedPlan || planSidebarOpen ? (
+                                <>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="mx-0.5 hidden h-4 sm:block"
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    className="shrink-0 whitespace-nowrap px-2 text-[length:var(--app-font-size-ui-sm,11px)] sm:text-[length:var(--app-font-size-ui-sm,11px)] font-normal sm:px-3"
+                                    size="sm"
+                                    type="button"
+                                    onClick={togglePlanSidebar}
+                                    title={
+                                      planSidebarOpen
+                                        ? `Hide ${planSidebarLabel.toLowerCase()} sidebar`
+                                        : `Show ${planSidebarLabel.toLowerCase()} sidebar`
+                                    }
+                                  >
+                                    <GoTasklist className="size-3.5" />
+                                    <span className="sr-only sm:not-sr-only">
+                                      {planSidebarOpen
+                                        ? `Hide ${planSidebarLabel}`
+                                        : planSidebarLabel}
+                                    </span>
                                   </Button>
                                 </>
                               ) : null}

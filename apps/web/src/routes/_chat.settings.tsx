@@ -11,7 +11,7 @@ import {
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   MAX_CHAT_FONT_SIZE_PX,
   getAppModelOptions,
@@ -66,6 +66,7 @@ import {
 } from "../notifications/taskCompletion";
 import { normalizeSettingsSection, SETTINGS_NAV_ITEMS } from "../settingsNavigation";
 import { useStore } from "../store";
+import { createAllThreadsSelector } from "../storeSelectors";
 import { formatRelativeTime } from "../components/Sidebar";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 
@@ -126,9 +127,9 @@ type InstallProviderSettings = {
 const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
   {
     provider: "codex",
-    title: "Codex",
+    title: "OpenAI",
     binaryPathKey: "codexBinaryPath",
-    binaryPlaceholder: "Codex binary path",
+    binaryPlaceholder: "OpenAI CLI path",
     binaryDescription: (
       <>
         Leave blank to use <code>codex</code> from your PATH.
@@ -136,7 +137,7 @@ const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
     ),
     homePathKey: "codexHomePath",
     homePlaceholder: "CODEX_HOME",
-    homeDescription: "Optional custom Codex home and config directory.",
+    homeDescription: "Optional custom OpenAI CLI config and auth directory.",
   },
   {
     provider: "claudeAgent",
@@ -268,17 +269,16 @@ function SettingsRouteView() {
   const serverWorktreesQuery = useQuery(serverWorktreesQueryOptions());
   const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const syncServerReadModel = useStore((store) => store.syncServerReadModel);
-  const threads = useStore((store) => store.threads);
+  const threads = useStore(useMemo(() => createAllThreadsSelector(), []));
   const projects = useStore((store) => store.projects);
+  const threadsHydrated = useStore((store) => store.threadsHydrated);
   const archivedThreads = threads.filter((thread) => thread.archivedAt != null);
-  const shouldOfferRecoveryTools = useStore((store) => {
-    if (!store.threadsHydrated || store.projects.length === 0) {
+  const shouldOfferRecoveryTools = useMemo(() => {
+    if (!threadsHydrated || projects.length === 0) {
       return false;
     }
-    return (
-      store.threads.length === 0 || store.threads.every((thread) => thread.messages.length === 0)
-    );
-  });
+    return threads.length === 0 || threads.every((thread) => thread.messages.length === 0);
+  }, [projects.length, threads, threadsHydrated]);
 
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [isRepairingLocalState, setIsRepairingLocalState] = useState(false);
@@ -854,7 +854,7 @@ function SettingsRouteView() {
                         ? "Claude"
                         : settings.defaultProvider === "gemini"
                           ? "Gemini"
-                          : "Codex"}
+                          : "OpenAI"}
                     </span>
                   </SelectValue>
                 </SelectTrigger>
@@ -862,7 +862,7 @@ function SettingsRouteView() {
                   <SelectItem hideIndicator value="codex">
                     <span className="flex items-center gap-2">
                       <OpenAI className="size-3.5" />
-                      Codex
+                      OpenAI
                     </span>
                   </SelectItem>
                   <SelectItem hideIndicator value="claudeAgent">

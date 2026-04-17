@@ -329,7 +329,7 @@ describe("deriveActivePlanState", () => {
         turnId: "turn-1",
         payload: {
           explanation: "Refined plan",
-          plan: [{ step: "Implement Codex user input", status: "inProgress" }],
+          plan: [{ step: "Implement OpenAI user input", status: "inProgress" }],
         },
       }),
     ];
@@ -338,7 +338,29 @@ describe("deriveActivePlanState", () => {
       createdAt: "2026-02-23T00:00:02.000Z",
       turnId: "turn-1",
       explanation: "Refined plan",
-      steps: [{ step: "Implement Codex user input", status: "inProgress" }],
+      steps: [{ step: "Implement OpenAI user input", status: "inProgress" }],
+    });
+  });
+
+  it("falls back to the most recent plan from a previous turn", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-from-turn-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          plan: [{ step: "Write tests", status: "completed" }],
+        },
+      }),
+    ];
+
+    expect(deriveActivePlanState(activities, TurnId.makeUnsafe("turn-2"))).toEqual({
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId: "turn-1",
+      steps: [{ step: "Write tests", status: "completed" }],
     });
   });
 });
@@ -812,7 +834,7 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.toolTitle).toBe("Search files");
   });
 
-  it("keeps compact Codex tool metadata used for icons and labels", () => {
+  it("keeps compact OpenAI tool metadata used for icons and labels", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "tool-with-metadata",
@@ -1226,6 +1248,23 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.label).toBe("Context compacted");
   });
+
+  it("keeps thread-level compaction progress entries visible without a turn id", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "compaction-progress-1",
+          kind: "context-compaction",
+          summary: "Compacting context",
+          tone: "info",
+        }),
+      ],
+      TurnId.makeUnsafe("turn-1"),
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.label).toBe("Compacting context");
+  });
 });
 
 describe("hasToolActivityForTurn", () => {
@@ -1569,11 +1608,11 @@ describe("hasLiveTurnTailWork", () => {
 });
 
 describe("PROVIDER_OPTIONS", () => {
-  it("lists Codex, Claude, and Gemini as available providers", () => {
+  it("lists OpenAI, Claude, and Gemini as available providers", () => {
     const claude = PROVIDER_OPTIONS.find((option) => option.value === "claudeAgent");
     const gemini = PROVIDER_OPTIONS.find((option) => option.value === "gemini");
     expect(PROVIDER_OPTIONS).toEqual([
-      { value: "codex", label: "Codex", available: true },
+      { value: "codex", label: "OpenAI", available: true },
       { value: "claudeAgent", label: "Claude", available: true },
       { value: "gemini", label: "Gemini", available: true },
     ]);

@@ -46,10 +46,12 @@ import { DiffStatLabel } from "./DiffStatLabel";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
-  computeMessageDurationStart,
-  deriveTerminalAssistantMessageIds,
+  computeStableMessagesTimelineRows,
+  deriveMessagesTimelineRows,
+  type MessagesTimelineRow,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  type StableMessagesTimelineRowsState,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import {
@@ -149,7 +151,7 @@ interface MessagesTimelineProps {
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
-  nowIso: string;
+  nowIso?: string;
   expandedWorkGroups: Record<string, boolean>;
   onToggleWorkGroup: (groupId: string) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -243,126 +245,26 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [hasMessages, isWorking, onTimelineHeightChange]);
 
-  const rows = useMemo<TimelineRow[]>(() => {
-    const nextRows: TimelineRow[] = [];
-    const timelineMessages = timelineEntries.flatMap((entry) =>
-      entry.kind === "message" ? [entry.message] : [],
-    );
-    const durationStartByMessageId = computeMessageDurationStart(timelineMessages);
-    const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(timelineMessages);
-    let pendingWorkGroup: Extract<TimelineRow, { kind: "work" }> | null = null;
-
-    const appendWorkEntriesToPreviousAssistant = (groupedEntries: TimelineWorkEntry[]): boolean => {
-      const previousRow = nextRows.at(-1);
-      if (
-        !previousRow ||
-        previousRow.kind !== "message" ||
-        previousRow.message.role !== "assistant"
-      ) {
-        return false;
-      }
-
-      previousRow.inlineWorkEntries = [...(previousRow.inlineWorkEntries ?? []), ...groupedEntries];
-      return true;
-    };
-
-    const flushPendingWorkGroup = (options?: { attachToPreviousAssistant?: boolean }) => {
-      if (!pendingWorkGroup) return;
-      const shouldAttachToPreviousAssistant = options?.attachToPreviousAssistant ?? true;
-      if (
-        !shouldAttachToPreviousAssistant ||
-        !appendWorkEntriesToPreviousAssistant(pendingWorkGroup.groupedEntries)
-      ) {
-        nextRows.push(pendingWorkGroup);
-      }
-      pendingWorkGroup = null;
-    };
-
-    for (let index = 0; index < timelineEntries.length; index += 1) {
-      const timelineEntry = timelineEntries[index];
-      if (!timelineEntry) {
-        continue;
-      }
-
-      if (timelineEntry.kind === "work") {
-        const groupedEntries = [timelineEntry.entry];
-        let cursor = index + 1;
-        while (cursor < timelineEntries.length) {
-          const nextEntry = timelineEntries[cursor];
-          if (!nextEntry || nextEntry.kind !== "work") break;
-          groupedEntries.push(nextEntry.entry);
-          cursor += 1;
-        }
-        flushPendingWorkGroup();
-        pendingWorkGroup = {
-          kind: "work",
-          id: timelineEntry.id,
-          createdAt: timelineEntry.createdAt,
-          groupedEntries,
-        };
-        index = cursor - 1;
-        continue;
-      }
-
-      if (timelineEntry.kind === "proposed-plan") {
-        flushPendingWorkGroup();
-        nextRows.push({
-          kind: "proposed-plan",
-          id: timelineEntry.id,
-          createdAt: timelineEntry.createdAt,
-          proposedPlan: timelineEntry.proposedPlan,
-        });
-        continue;
-      }
-
-      const inlineWorkEntries =
-        timelineEntry.message.role === "assistant" ? pendingWorkGroup?.groupedEntries : undefined;
-      const inlineWorkGroupId =
-        timelineEntry.message.role === "assistant" ? pendingWorkGroup?.id : undefined;
-      if (timelineEntry.message.role === "assistant") {
-        pendingWorkGroup = null;
-      } else {
-        flushPendingWorkGroup();
-      }
-
-      nextRows.push({
-        kind: "message",
-        id: timelineEntry.id,
-        createdAt: timelineEntry.createdAt,
-        message: timelineEntry.message,
-        ...(inlineWorkEntries ? { inlineWorkEntries } : {}),
-        ...(inlineWorkGroupId ? { inlineWorkGroupId } : {}),
-        durationStart:
-          durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt,
-        showCompletionDivider:
-          timelineEntry.message.role === "assistant" &&
-          completionDividerBeforeEntryId === timelineEntry.id,
-        showAssistantCopyButton:
-          timelineEntry.message.role === "assistant" &&
-          terminalAssistantMessageIds.has(timelineEntry.message.id),
-      });
-    }
-
-    // Keep any trailing work summary visually attached to the last answer so a
-    // completed chat does not end with a detached tool-log footer.
-    flushPendingWorkGroup();
-
-    if (isWorking) {
-      nextRows.push({
-        kind: "working",
-        id: "working-indicator-row",
-        createdAt: activeTurnStartedAt,
-      });
-    }
-
-    return nextRows;
-  }, [
-    timelineEntries,
-    completionDividerBeforeEntryId,
-    isWorking,
-    activeTurnInProgress,
-    activeTurnStartedAt,
-  ]);
+  const rawRows = useMemo(
+    () =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        completionDividerBeforeEntryId,
+        isWorking,
+        activeTurnStartedAt,
+        turnDiffSummaryByAssistantMessageId,
+        revertTurnCountByUserMessageId,
+      }),
+    [
+      timelineEntries,
+      completionDividerBeforeEntryId,
+      isWorking,
+      activeTurnStartedAt,
+      turnDiffSummaryByAssistantMessageId,
+      revertTurnCountByUserMessageId,
+    ],
+  );
+  const rows = useStableRows(rawRows);
 
   const firstUnvirtualizedRowIndex = useMemo(() => {
     const firstTailRowIndex = Math.max(rows.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0);
@@ -444,10 +346,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return estimateTimelineProposedPlanHeight(row.proposedPlan, normalizedChatFontSizePx);
       }
       if (row.kind === "working") return 40;
-      const turnSummary =
-        row.message.role === "assistant"
-          ? turnDiffSummaryByAssistantMessageId.get(row.message.id)
-          : undefined;
+      const turnSummary = row.assistantTurnDiffSummary;
       const messageHeightInput = {
         ...row.message,
         showCompletionDivider: row.showCompletionDivider,
@@ -571,7 +470,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }));
   }, []);
 
-  const renderRowContent = (row: TimelineRow) => (
+  const renderRowContent = (row: MessagesTimelineRow) => (
     <div
       className={cn(
         row.kind === "work" || (row.kind === "message" && row.message.role === "assistant")
@@ -636,7 +535,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           const terminalContexts = displayedUserMessage.contexts;
           const showUserText =
             displayedUserMessage.visibleText.trim().length > 0 || terminalContexts.length > 0;
-          const canRevertAgentWork = revertTurnCountByUserMessageId.has(row.message.id);
+          const bubbleIsChipOnly =
+            showUserText &&
+            terminalContexts.length === 0 &&
+            hasOnlyInlineSkillChips(displayedUserMessage.visibleText);
+          const canRevertAgentWork = typeof row.revertTurnCount === "number";
           return (
             <div className="flex w-full justify-end">
               <div className="group flex max-w-[80%] flex-col items-end gap-px">
@@ -663,7 +566,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   </div>
                 )}
                 {showUserText && (
-                  <div className="w-max max-w-full min-w-0 self-end rounded-xl border border-border/70 bg-secondary px-3 py-1">
+                  <div
+                    className={cn(
+                      "w-max max-w-full min-w-0 self-end rounded-lg border border-border/70 bg-secondary px-3",
+                      bubbleIsChipOnly ? "py-0.5" : "pt-[3px] pb-[5px]",
+                    )}
+                  >
                     <UserMessageBody
                       text={displayedUserMessage.visibleText}
                       terminalContexts={terminalContexts}
@@ -730,7 +638,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             showCopyButton: row.showAssistantCopyButton,
             streaming: row.message.streaming,
           });
-          const turnSummary = turnDiffSummaryByAssistantMessageId.get(row.message.id);
+          const turnSummary = row.assistantTurnDiffSummary;
           const fileDiffStatByPath = new Map(
             (turnSummary?.files ?? []).map((file) => [
               file.path,
@@ -756,18 +664,40 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hasGenericInlineFileChangeEntry && (turnSummary?.files.length ?? 0) > 0
               ? turnSummary!.files
               : [];
-          const assistantMeta = [
-            formatMessageMeta(
-              row.message.createdAt,
-              row.message.streaming
-                ? formatElapsed(row.durationStart, nowIso)
-                : formatElapsed(row.durationStart, row.message.completedAt),
-              timestampFormat,
-            ),
-            inlineWorkSummary,
-          ]
-            .filter((value): value is string => Boolean(value))
-            .join(" • ");
+          const assistantMeta = row.message.streaming ? (
+            nowIso ? (
+              [
+                formatMessageMeta(
+                  row.message.createdAt,
+                  formatElapsed(row.durationStart, nowIso),
+                  timestampFormat,
+                ),
+                inlineWorkSummary,
+              ]
+                .filter((value): value is string => Boolean(value))
+                .join(" • ")
+            ) : (
+              <>
+                <LiveMessageMeta
+                  createdAt={row.message.createdAt}
+                  durationStart={row.durationStart}
+                  timestampFormat={timestampFormat}
+                />
+                {inlineWorkSummary ? <> • {inlineWorkSummary}</> : null}
+              </>
+            )
+          ) : (
+            [
+              formatMessageMeta(
+                row.message.createdAt,
+                formatElapsed(row.durationStart, row.message.completedAt),
+                timestampFormat,
+              ),
+              inlineWorkSummary,
+            ]
+              .filter((value): value is string => Boolean(value))
+              .join(" • ")
+          );
           return (
             <>
               {row.showCompletionDivider && (
@@ -1006,21 +936,54 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       )}
 
       {row.kind === "working" && (
-        <div className="py-0.5 pl-1.5">
-          <div
-            className="flex items-center gap-1 pt-1 text-muted-foreground/70 font-system-ui"
-            style={{ fontSize: `${appTypographyScale.uiSmPx}px` }}
-          >
-            <span>Working for</span>
-            <span>
-              {row.createdAt ? (formatWorkingTimer(row.createdAt, nowIso) ?? "0s") : "00:00"}
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
-            </span>
-          </div>
+        <div>
+          {row.label ? (
+            <div className="my-3 flex items-center gap-3">
+              <span className="h-px flex-1 bg-border" />
+              <span
+                className="inline-flex items-center gap-1 text-muted-foreground/80 font-system-ui"
+                style={{ fontSize: `${appTypographyScale.uiSmPx}px` }}
+              >
+                <span>
+                  {formatWorkingLabel(row.label)}
+                  {row.createdAt
+                    ? ` ${nowIso ? (formatWorkingTimer(row.createdAt, nowIso) ?? "0s") : ""}`
+                    : null}
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
+                  <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
+                  <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
+                </span>
+              </span>
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-1 pt-1 text-muted-foreground/70 font-system-ui"
+              style={{ fontSize: `${appTypographyScale.uiSmPx}px` }}
+            >
+              <span>
+                {row.createdAt ? (
+                  <>
+                    Working for{" "}
+                    {nowIso ? (
+                      (formatWorkingTimer(row.createdAt, nowIso) ?? "0s")
+                    ) : (
+                      <WorkingTimer createdAt={row.createdAt} />
+                    )}
+                  </>
+                ) : (
+                  "Working..."
+                )}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
+                <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
+                <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1073,35 +1036,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 });
 
-type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
-type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
-type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["proposedPlan"];
-type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
-type TimelineRow =
-  | {
-      kind: "work";
-      id: string;
-      createdAt: string;
-      groupedEntries: TimelineWorkEntry[];
-    }
-  | {
-      kind: "message";
-      id: string;
-      createdAt: string;
-      message: TimelineMessage;
-      inlineWorkEntries?: TimelineWorkEntry[];
-      inlineWorkGroupId?: string;
-      durationStart: string;
-      showCompletionDivider: boolean;
-      showAssistantCopyButton: boolean;
-    }
-  | {
-      kind: "proposed-plan";
-      id: string;
-      createdAt: string;
-      proposedPlan: TimelineProposedPlan;
-    }
-  | { kind: "working"; id: string; createdAt: string | null };
+type TimelineMessage = Extract<MessagesTimelineRow, { kind: "message" }>["message"];
+type TimelineProposedPlan = Extract<MessagesTimelineRow, { kind: "proposed-plan" }>["proposedPlan"];
+type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
+
+// Reuse stable row references so streaming updates only force React work for
+// rows whose visible content actually changed.
+function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
+  const previousStateRef = useRef<StableMessagesTimelineRowsState>({
+    byId: new Map<string, MessagesTimelineRow>(),
+    result: [],
+  });
+
+  return useMemo(() => {
+    const nextState = computeStableMessagesTimelineRows(rows, previousStateRef.current);
+    previousStateRef.current = nextState;
+    return nextState.result;
+  }, [rows]);
+}
 
 function estimateTimelineProposedPlanHeight(
   proposedPlan: TimelineProposedPlan,
@@ -1109,6 +1061,51 @@ function estimateTimelineProposedPlanHeight(
 ): number {
   const estimatedLines = Math.max(1, Math.ceil(proposedPlan.planMarkdown.length / 72));
   return 120 + Math.min(estimatedLines * getChatTranscriptLineHeightPx(chatFontSizePx), 880);
+}
+
+// Keep the live clock scoped to tiny leaf components so active Claude turns do
+// not force the full transcript tree to re-render every second.
+function WorkingTimer({ createdAt }: { createdAt: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [createdAt]);
+  return <>{formatWorkingTimer(createdAt, new Date(nowMs).toISOString()) ?? "0s"}</>;
+}
+
+function LiveMessageMeta({
+  createdAt,
+  durationStart,
+  timestampFormat,
+}: {
+  createdAt: string;
+  durationStart: string;
+  timestampFormat: TimestampFormat;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [durationStart]);
+
+  return (
+    <>
+      {formatMessageMeta(
+        createdAt,
+        formatElapsed(durationStart, new Date(nowMs).toISOString()),
+        timestampFormat,
+      )}
+    </>
+  );
 }
 
 function formatWorkingTimer(startIso: string, endIso: string): string | null {
@@ -1132,6 +1129,14 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
   }
 
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function formatWorkingLabel(label: string): string {
+  const normalized = normalizeCompactToolLabel(label).trim();
+  if (normalized === "Compacting context") {
+    return "Compacting conversation...";
+  }
+  return normalized.endsWith("...") ? normalized : `${normalized}...`;
 }
 
 function formatMessageMeta(
@@ -1369,7 +1374,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   if (props.terminalContexts.length === 0 && hasOnlyInlineSkillChips(props.text)) {
     return (
       <div
-        className="flex max-w-full min-w-0 items-center leading-none text-foreground"
+        className="flex max-w-full min-w-0 items-center leading-none text-foreground [&>span]:translate-y-0"
         style={props.chatTypographyStyle}
       >
         {renderUserMessageInlineText(props.text, "user-message-inline-chip-only")}
@@ -1693,7 +1698,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const rowFontSizePx = textFontSizePx;
 
   return (
-    <div className={cn(compact ? "py-0.5" : "rounded-lg px-1 py-1")}>
+    <div className={cn(compact ? "py-0.5" : "rounded-lg py-1")}>
       {showEditedRows ? (
         <div className="space-y-0.5">
           {changedFiles.map((changedFilePath) => {

@@ -7,40 +7,8 @@ import {
 } from "./agentMentions";
 
 describe("agentMentions", () => {
-  it("shows one preferred alias per Codex model in autocomplete", () => {
+  it("shows one preferred alias per OpenAI model in autocomplete", () => {
     expect(getAgentMentionAutocompleteAliases("codex")).toEqual([
-      {
-        alias: "5.2",
-        provider: "codex",
-        kind: "model",
-        model: "gpt-5.2",
-        displayName: "GPT-5.2",
-        color: "amber",
-      },
-      {
-        alias: "5.2-codex",
-        provider: "codex",
-        kind: "model",
-        model: "gpt-5.2-codex",
-        displayName: "GPT-5.2 Codex",
-        color: "orange",
-      },
-      {
-        alias: "codex",
-        provider: "codex",
-        kind: "model",
-        model: "gpt-5.3-codex",
-        displayName: "GPT-5.3 Codex",
-        color: "teal",
-      },
-      {
-        alias: "spark",
-        provider: "codex",
-        kind: "model",
-        model: "gpt-5.3-codex-spark",
-        displayName: "GPT-5.3 Spark",
-        color: "cyan",
-      },
       {
         alias: "5.4",
         provider: "codex",
@@ -56,6 +24,38 @@ describe("agentMentions", () => {
         model: "gpt-5.4-mini",
         displayName: "GPT-5.4 Mini",
         color: "fuchsia",
+      },
+      {
+        alias: "5.3-codex",
+        provider: "codex",
+        kind: "model",
+        model: "gpt-5.3-codex",
+        displayName: "GPT-5.3",
+        color: "teal",
+      },
+      {
+        alias: "spark",
+        provider: "codex",
+        kind: "model",
+        model: "gpt-5.3-codex-spark",
+        displayName: "GPT-5.3 Spark",
+        color: "cyan",
+      },
+      {
+        alias: "5.2",
+        provider: "codex",
+        kind: "model",
+        model: "gpt-5.2",
+        displayName: "GPT-5.2",
+        color: "amber",
+      },
+      {
+        alias: "5.2-codex",
+        provider: "codex",
+        kind: "model",
+        model: "gpt-5.2-codex",
+        displayName: "GPT-5.2",
+        color: "orange",
       },
     ]);
   });
@@ -122,10 +122,10 @@ describe("agentMentions", () => {
   });
 
   it("keeps compatibility aliases resolvable even when hidden from autocomplete", () => {
-    const codexCompatAlias = resolveAgentAlias("5.3", "codex");
+    const codexCompatAlias = resolveAgentAlias("codex", "codex");
     const claudeCompatAlias = resolveAgentAlias("reviewer", "claudeAgent");
 
-    expect(getAgentMentionAliases("codex").map(({ alias }) => alias)).toContain("5.3");
+    expect(getAgentMentionAliases("codex").map(({ alias }) => alias)).toContain("codex");
     expect(getAgentMentionAliases("codex").map(({ alias }) => alias)).toContain("5.3-spark");
     expect(getAgentMentionAliases("codex").map(({ alias }) => alias)).toContain("5.4-mini");
     expect(getAgentMentionAliases("claudeAgent").map(({ alias }) => alias)).toContain("reviewer");

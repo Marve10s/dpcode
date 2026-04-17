@@ -625,7 +625,7 @@ export function PluginLibrary() {
                 ) : filteredPluginEntries.length === 0 ? (
                   <EmptyPanel
                     title="No installed plugins found"
-                    description="This view only shows plugins already available in your Codex setup."
+                    description="This view only shows plugins already available in your current setup."
                   />
                 ) : (
                   <div className="space-y-6">

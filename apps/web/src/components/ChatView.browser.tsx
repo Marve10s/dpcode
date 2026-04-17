@@ -32,6 +32,7 @@ import {
   type TerminalContextDraft,
   removeInlineTerminalContextPlaceholder,
 } from "../lib/terminalContext";
+import { emitOrchestrationSubscriptionPushes } from "../lib/orchestrationBrowserTest";
 import { isMacPlatform } from "../lib/utils";
 import { getRouter } from "../router";
 import { useSplitViewStore } from "../splitViewStore";
@@ -67,6 +68,7 @@ interface TestFixture {
 let fixture: TestFixture;
 const wsRequests: WsRequestEnvelope["body"][] = [];
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
+let pushSequence = 1;
 
 interface ViewportSpec {
   name: string;
@@ -770,6 +772,20 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       pr: null,
     };
   }
+  if (tag === WS_METHODS.gitCreateWorktree) {
+    const requestedBranch =
+      typeof body.newBranch === "string"
+        ? body.newBranch
+        : typeof body.branch === "string"
+          ? body.branch
+          : "main";
+    return {
+      worktree: {
+        path: `/repo/.codex/worktrees/project/${requestedBranch.replaceAll("/", "-")}`,
+        branch: requestedBranch,
+      },
+    };
+  }
   if (tag === WS_METHODS.projectsSearchEntries) {
     return {
       entries: [],
@@ -794,10 +810,11 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
 
 const worker = setupWorker(
   wsLink.addEventListener("connection", ({ client }) => {
+    pushSequence = 1;
     client.send(
       JSON.stringify({
         type: "push",
-        sequence: 1,
+        sequence: pushSequence++,
         channel: WS_CHANNELS.serverWelcome,
         data: fixture.welcome,
       }),
@@ -820,6 +837,12 @@ const worker = setupWorker(
           result: resolveWsRpc(request.body),
         }),
       );
+      emitOrchestrationSubscriptionPushes({
+        client,
+        snapshot: fixture.snapshot,
+        requestBody: request.body,
+        nextSequence: () => pushSequence++,
+      });
     });
   }),
   http.get("*/attachments/:attachmentId", async () => {
@@ -941,6 +964,20 @@ function dispatchTerminalThreadShortcut(): void {
 function dispatchThreadShortcut(key: string): void {
   const useMetaForMod = isMacPlatform(navigator.platform);
   window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      shiftKey: true,
+      metaKey: useMetaForMod,
+      ctrlKey: !useMetaForMod,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+function dispatchComposerPickerShortcut(target: EventTarget, key: "m" | "e"): void {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  target.dispatchEvent(
     new KeyboardEvent("keydown", {
       key,
       shiftKey: true,
@@ -1196,6 +1233,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
   beforeEach(async () => {
     await setViewport(DEFAULT_VIEWPORT);
     attachmentResponseDelayMs = 0;
+    pushSequence = 1;
     localStorage.clear();
     document.body.innerHTML = "";
     wsRequests.length = 0;
@@ -1788,6 +1826,54 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("opens the composer model picker with Cmd+Shift+M", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-model-picker-shortcut" as MessageId,
+        targetText: "model picker shortcut",
+      }),
+    });
+
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      dispatchComposerPickerShortcut(composerEditor, "m");
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("GPT-5.4");
+        expect(text).toContain("GPT-5.4 Mini");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the composer effort picker with Cmd+Shift+E", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-picker-shortcut" as MessageId,
+        targetText: "effort picker shortcut",
+      }),
+    });
+
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      dispatchComposerPickerShortcut(composerEditor, "e");
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("Effort");
+        expect(text).toContain("Low");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps removed terminal context pills removed when a new one is added", async () => {
     const removedLabel = "Terminal 1 lines 1-2";
     const addedLabel = "Terminal 2 lines 9-10";
@@ -2317,6 +2403,82 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(useComposerDraftStore.getState().getDraftThread(newThreadId)?.envMode).toBe(
             "worktree",
           );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("creates a temporary branch-backed worktree on first send in New worktree mode", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-new-worktree-send-test" as MessageId,
+        targetText: "new worktree send test",
+      }),
+    });
+
+    try {
+      const newThreadButton = page.getByTestId("new-thread-button");
+      await expect.element(newThreadButton).toBeInTheDocument();
+      await newThreadButton.click();
+
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+
+      const envPickerTrigger = page.getByText("Local");
+      await expect.element(envPickerTrigger).toBeInTheDocument();
+      await envPickerTrigger.click();
+
+      const newWorktreeOption = page.getByText("New worktree");
+      await expect.element(newWorktreeOption).toBeInTheDocument();
+      await newWorktreeOption.click();
+
+      useComposerDraftStore.getState().setPrompt(newThreadId, "Ship it");
+
+      const sendButton = await waitForSendButton();
+      expect(sendButton.disabled).toBe(false);
+      await sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const createWorktreeRequest = wsRequests.find(
+            (request) =>
+              request._tag === WS_METHODS.gitCreateWorktree &&
+              request.cwd === "/repo/project" &&
+              request.branch === "main" &&
+              typeof request.newBranch === "string",
+          );
+          expect(createWorktreeRequest).toBeTruthy();
+          expect(createWorktreeRequest?.newBranch).toMatch(/^dpcode\/[0-9a-f]{8}$/);
+
+          const detachedRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.gitCreateDetachedWorktree,
+          );
+          expect(detachedRequest).toBeUndefined();
+
+          const createThreadRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              typeof request.command === "object" &&
+              request.command !== null &&
+              "type" in request.command &&
+              "threadId" in request.command &&
+              request.command.type === "thread.create" &&
+              request.command.threadId === newThreadId,
+          );
+          expect(createThreadRequest).toBeTruthy();
+          expect(createThreadRequest?.command).toMatchObject({
+            envMode: "worktree",
+            branch: createWorktreeRequest?.newBranch,
+            worktreePath: `/repo/.codex/worktrees/project/${String(createWorktreeRequest?.newBranch).replaceAll("/", "-")}`,
+          });
         },
         { timeout: 8_000, interval: 16 },
       );

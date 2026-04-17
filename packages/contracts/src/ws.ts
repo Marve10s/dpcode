@@ -4,6 +4,12 @@ import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./ba
 import {
   ClientOrchestrationCommand,
   OrchestrationEvent,
+  OrchestrationShellStreamItem,
+  OrchestrationSubscribeShellInput,
+  OrchestrationSubscribeThreadInput,
+  OrchestrationThreadStreamItem,
+  OrchestrationUnsubscribeShellInput,
+  OrchestrationUnsubscribeThreadInput,
   ORCHESTRATION_WS_CHANNELS,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationRepairStateInput,
@@ -52,9 +58,11 @@ import {
   ProviderGetComposerCapabilitiesInput,
   ProviderListPluginsInput,
   ProviderListModelsInput,
+  ProviderListAgentsInput,
   ProviderReadPluginInput,
   ProviderListSkillsInput,
 } from "./providerDiscovery";
+import { ProviderCompactThreadInput } from "./provider";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -103,11 +111,13 @@ export const WS_METHODS = {
 
   // Provider discovery
   providerGetComposerCapabilities: "provider.getComposerCapabilities",
+  providerCompactThread: "provider.compactThread",
   providerListCommands: "provider.listCommands",
   providerListSkills: "provider.listSkills",
   providerListPlugins: "provider.listPlugins",
   providerReadPlugin: "provider.readPlugin",
   providerListModels: "provider.listModels",
+  providerListAgents: "provider.listAgents",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -143,6 +153,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(ORCHESTRATION_WS_METHODS.getTurnDiff, OrchestrationGetTurnDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getFullThreadDiff, OrchestrationGetFullThreadDiffInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.replayEvents, OrchestrationReplayEventsInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.subscribeShell, OrchestrationSubscribeShellInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.unsubscribeShell, OrchestrationUnsubscribeShellInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.subscribeThread, OrchestrationSubscribeThreadInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.unsubscribeThread, OrchestrationUnsubscribeThreadInput),
 
   // Project Search
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
@@ -185,11 +199,13 @@ const WebSocketRequestBody = Schema.Union([
 
   // Provider discovery
   tagRequestBody(WS_METHODS.providerGetComposerCapabilities, ProviderGetComposerCapabilitiesInput),
+  tagRequestBody(WS_METHODS.providerCompactThread, ProviderCompactThreadInput),
   tagRequestBody(WS_METHODS.providerListCommands, ProviderListCommandsInput),
   tagRequestBody(WS_METHODS.providerListSkills, ProviderListSkillsInput),
   tagRequestBody(WS_METHODS.providerListPlugins, ProviderListPluginsInput),
   tagRequestBody(WS_METHODS.providerReadPlugin, ProviderReadPluginInput),
   tagRequestBody(WS_METHODS.providerListModels, ProviderListModelsInput),
+  tagRequestBody(WS_METHODS.providerListAgents, ProviderListAgentsInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
@@ -228,6 +244,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
+  readonly [ORCHESTRATION_WS_CHANNELS.shellEvent]: OrchestrationShellStreamItem;
+  readonly [ORCHESTRATION_WS_CHANNELS.threadEvent]: OrchestrationThreadStreamItem;
 }
 
 export type WsPushChannel = keyof WsPushPayloadByChannel;
@@ -262,6 +280,14 @@ export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
 );
+export const WsPushOrchestrationShellEvent = makeWsPushSchema(
+  ORCHESTRATION_WS_CHANNELS.shellEvent,
+  OrchestrationShellStreamItem,
+);
+export const WsPushOrchestrationThreadEvent = makeWsPushSchema(
+  ORCHESTRATION_WS_CHANNELS.threadEvent,
+  OrchestrationThreadStreamItem,
+);
 
 export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.gitActionProgress,
@@ -270,6 +296,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverProviderStatusesUpdated,
   WS_CHANNELS.terminalEvent,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
+  ORCHESTRATION_WS_CHANNELS.shellEvent,
+  ORCHESTRATION_WS_CHANNELS.threadEvent,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
@@ -280,6 +308,8 @@ export const WsPush = Schema.Union([
   WsPushGitActionProgress,
   WsPushTerminalEvent,
   WsPushOrchestrationDomainEvent,
+  WsPushOrchestrationShellEvent,
+  WsPushOrchestrationThreadEvent,
 ]);
 export type WsPush = typeof WsPush.Type;
 

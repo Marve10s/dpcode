@@ -1196,7 +1196,7 @@ describe("WebSocket Server", () => {
         available: true,
         authStatus: "unknown",
         checkedAt: "2026-01-01T00:10:00.000Z",
-        message: "Could not verify Codex authentication status.",
+        message: "Could not verify OpenAI authentication status.",
       },
     ];
 
@@ -1508,6 +1508,7 @@ describe("WebSocket Server", () => {
       listSessions: () => Effect.succeed([]),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       rollbackConversation: () => unsupported(),
+      compactThread: () => unsupported(),
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };
     const providerLayer = Layer.mergeAll(
@@ -1559,6 +1560,7 @@ describe("WebSocket Server", () => {
             cached: false,
           }),
         listModels: () => Effect.succeed({ models: [], source: "test", cached: false }),
+        listAgents: () => Effect.succeed({ agents: [], source: "test", cached: false }),
       }),
       Layer.succeed(ProviderAdapterRegistry, {
         getByProvider: (provider) => Effect.fail(new ProviderUnsupportedError({ provider })),

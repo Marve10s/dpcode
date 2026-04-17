@@ -16,8 +16,9 @@ import React, { memo, useEffect, useRef, useState } from "react";
 import { BsLayoutSplit, BsTerminal } from "react-icons/bs";
 import { FiGitBranch } from "react-icons/fi";
 import { HiMiniArrowsPointingOut } from "react-icons/hi2";
+import { TbLayoutSidebarRight } from "react-icons/tb";
 import GitActionsControl from "../GitActionsControl";
-import { AppsIcon, ArrowRightIcon, DiffIcon, GlobeIcon, PlusIcon } from "~/lib/icons";
+import { AppsIcon, ArrowRightIcon, GlobeIcon, PlusIcon } from "~/lib/icons";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
@@ -66,6 +67,7 @@ interface ChatHeaderProps {
   browserOpen: boolean;
   gitCwd: string | null;
   diffOpen: boolean;
+  diffDisabledReason?: string | null;
   surfaceMode?: "single" | "split";
   chatLayoutAction?: {
     kind: "split" | "maximize";
@@ -110,6 +112,7 @@ export const ChatHeader = memo(function ChatHeader({
   browserOpen,
   gitCwd,
   diffOpen,
+  diffDisabledReason = null,
   surfaceMode = "single",
   chatLayoutAction = null,
   onRunProjectScript,
@@ -240,11 +243,11 @@ export const ChatHeader = memo(function ChatHeader({
                   {compact ? (
                     <ArrowRightIcon className="size-2.5 shrink-0 opacity-45" />
                   ) : (
-                    <span className="truncate">Hand off to</span>
+                    <span className="truncate font-normal">Hand off to</span>
                   )}
                   {renderProviderIcon(handoffActionTargetProvider, "size-3.5 shrink-0")}
                   {!compact && (
-                    <span className="truncate">
+                    <span className="truncate font-normal">
                       {PROVIDER_DISPLAY_NAMES[handoffActionTargetProvider ?? "codex"]}
                     </span>
                   )}
@@ -373,7 +376,7 @@ export const ChatHeader = memo(function ChatHeader({
                 aria-label="Toggle diff panel"
                 variant="default"
                 size="xs"
-                disabled={!isGitRepo}
+                disabled={!isGitRepo || (diffDisabledReason !== null && !diffOpen)}
               >
                 {showDiffTotals ? (
                   <span className="inline-flex items-center gap-1">
@@ -385,16 +388,18 @@ export const ChatHeader = memo(function ChatHeader({
                     </span>
                   </span>
                 ) : null}
-                <DiffIcon className="size-3.5" />
+                <TbLayoutSidebarRight className="size-3.5" />
               </Toggle>
             }
           />
           <TooltipPopup side="bottom">
             {!isGitRepo
               ? "Diff panel is unavailable because this project is not a git repository."
-              : diffToggleShortcutLabel
-                ? `Toggle diff panel (${diffToggleShortcutLabel})`
-                : "Toggle diff panel"}
+              : diffDisabledReason && !diffOpen
+                ? diffDisabledReason
+                : diffToggleShortcutLabel
+                  ? `Toggle diff panel (${diffToggleShortcutLabel})`
+                  : "Toggle diff panel"}
           </TooltipPopup>
         </Tooltip>
       </div>

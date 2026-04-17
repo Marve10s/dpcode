@@ -745,6 +745,22 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "thread/compacting") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "item.updated",
+        payload: {
+          itemType: "context_compaction",
+          status: "inProgress",
+          title: "Context compaction",
+          detail: event.message ?? "Compacting context",
+          ...(event.payload !== undefined ? { data: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
   if (
     event.method === "thread/status/changed" ||
     event.method === "thread/archived" ||
@@ -1410,7 +1426,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId: input.threadId,
-            detail: toMessage(cause, "Failed to start Codex adapter session."),
+            detail: toMessage(cause, "Failed to start OpenAI adapter session."),
             cause,
           }),
       }).pipe(Effect.map((session) => session));
@@ -1604,6 +1620,12 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       );
     };
 
+    const compactThread: NonNullable<CodexAdapterShape["compactThread"]> = (threadId) =>
+      Effect.tryPromise({
+        try: () => manager.compactThread(threadId),
+        catch: (cause) => toRequestError(threadId, "thread/compact/start", cause),
+      });
+
     const forkThread: CodexAdapterShape["forkThread"] = (input) =>
       Effect.tryPromise({
         try: () => manager.forkThread(input),
@@ -1785,6 +1807,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       interruptTurn,
       readThread,
       rollbackThread,
+      compactThread,
       forkThread,
       respondToRequest,
       respondToUserInput,

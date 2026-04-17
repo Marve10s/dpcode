@@ -161,7 +161,8 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
     return {
       status: "warning",
       authStatus: "unknown",
-      message: "Codex CLI authentication status command is unavailable in this Codex version.",
+      message:
+        "OpenAI CLI authentication status command is unavailable in this installed CLI version.",
     };
   }
 
@@ -175,7 +176,7 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
     return {
       status: "error",
       authStatus: "unauthenticated",
-      message: "Codex CLI is not authenticated. Run `codex login` and try again.",
+      message: "OpenAI CLI (`codex`) is not authenticated. Run `codex login` and try again.",
     };
   }
 
@@ -218,7 +219,7 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
     return {
       status: "error",
       authStatus: "unauthenticated",
-      message: "Codex CLI is not authenticated. Run `codex login` and try again.",
+      message: "OpenAI CLI (`codex`) is not authenticated. Run `codex login` and try again.",
     };
   }
   if (parsedAuth.attemptedJsonParse) {
@@ -226,7 +227,7 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
       status: "warning",
       authStatus: "unknown",
       message:
-        "Could not verify Codex authentication status from JSON output (missing auth marker).",
+        "Could not verify OpenAI authentication status from JSON output (missing auth marker).",
     };
   }
   if (result.code === 0) {
@@ -238,8 +239,8 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
     status: "warning",
     authStatus: "unknown",
     message: detail
-      ? `Could not verify Codex authentication status. ${detail}`
-      : "Could not verify Codex authentication status.",
+      ? `Could not verify OpenAI authentication status. ${detail}`
+      : "Could not verify OpenAI authentication status.",
   };
 }
 
@@ -387,8 +388,8 @@ export const checkCodexProviderStatus: Effect.Effect<
       authStatus: "unknown" as const,
       checkedAt,
       message: isCommandMissingCause(error)
-        ? "Codex CLI (`codex`) is not installed or not on PATH."
-        : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        ? "OpenAI CLI (`codex`) is not installed or not on PATH."
+        : `Failed to execute OpenAI CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
     };
   }
 
@@ -399,7 +400,8 @@ export const checkCodexProviderStatus: Effect.Effect<
       available: false,
       authStatus: "unknown" as const,
       checkedAt,
-      message: "Codex CLI is installed but failed to run. Timed out while running command.",
+      message:
+        "OpenAI CLI (`codex`) is installed but failed to run. Timed out while running command.",
     };
   }
 
@@ -413,8 +415,8 @@ export const checkCodexProviderStatus: Effect.Effect<
       authStatus: "unknown" as const,
       checkedAt,
       message: detail
-        ? `Codex CLI is installed but failed to run. ${detail}`
-        : "Codex CLI is installed but failed to run.",
+        ? `OpenAI CLI (\`codex\`) is installed but failed to run. ${detail}`
+        : "OpenAI CLI (`codex`) is installed but failed to run.",
     };
   }
 
@@ -443,7 +445,7 @@ export const checkCodexProviderStatus: Effect.Effect<
       available: true,
       authStatus: "unknown" as const,
       checkedAt,
-      message: "Using a custom Codex model provider; OpenAI login check skipped.",
+      message: "Using a custom model provider; OpenAI login check skipped.",
     } satisfies ServerProviderStatus;
   }
 
@@ -462,8 +464,8 @@ export const checkCodexProviderStatus: Effect.Effect<
       checkedAt,
       message:
         error instanceof Error
-          ? `Could not verify Codex authentication status: ${error.message}.`
-          : "Could not verify Codex authentication status.",
+          ? `Could not verify OpenAI authentication status: ${error.message}.`
+          : "Could not verify OpenAI authentication status.",
     };
   }
 
@@ -474,7 +476,7 @@ export const checkCodexProviderStatus: Effect.Effect<
       available: true,
       authStatus: "unknown" as const,
       checkedAt,
-      message: "Could not verify Codex authentication status. Timed out while running command.",
+      message: "Could not verify OpenAI authentication status. Timed out while running command.",
     };
   }
 

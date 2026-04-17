@@ -3,7 +3,6 @@ import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/reac
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ThreadId, type TurnId } from "@t3tools/contracts";
-import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadEnvironment";
 import { FaPlusMinus } from "react-icons/fa6";
 import { LuWrapText } from "react-icons/lu";
 import {
@@ -37,13 +36,16 @@ import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch"
 import { useTheme } from "../hooks/useTheme";
 import { buildPatchCacheKey } from "../lib/diffRendering";
 import { resolveDiffThemeName } from "../lib/diffRendering";
+import { resolveDiffEnvironmentState } from "../lib/threadEnvironment";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
 import { createProjectSelector, createThreadSelector } from "../storeSelectors";
 import { useAppSettings } from "../appSettings";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { formatShortTimestamp } from "../timestampFormat";
 import ChatMarkdown from "./ChatMarkdown";
+import { resolveDiffPanelThread } from "./DiffPanel.logic";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
 import { Button } from "./ui/button";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
@@ -61,7 +63,10 @@ function buildDiffPanelUnsafeCSS(theme: "light" | "dark"): string {
   /* Route the entire diff viewer through the chat code font so custom code fonts reach line numbers too. */
   --diffs-font-family: var(--font-chat-code-family);
   --diffs-header-font-family: var(--font-chat-code-family);
+  /* Honor the user-chosen chat code font size from settings instead of the library default (13px). */
+  --diffs-font-size: var(--app-font-size-chat-code, 11px);
   font-family: var(--font-chat-code-family) !important;
+  font-size: var(--app-font-size-chat-code, 11px) !important;
 }
 
 [data-diffs-header],
@@ -72,7 +77,9 @@ function buildDiffPanelUnsafeCSS(theme: "light" | "dark"): string {
   /* Re-assert the code font inside the library chrome because these nodes live in shadow-rooted markup. */
   --diffs-font-family: var(--font-chat-code-family) !important;
   --diffs-header-font-family: var(--font-chat-code-family) !important;
+  --diffs-font-size: var(--app-font-size-chat-code, 11px) !important;
   font-family: var(--font-chat-code-family) !important;
+  font-size: var(--app-font-size-chat-code, 11px) !important;
   --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
   --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
   --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
@@ -103,6 +110,7 @@ function buildDiffPanelUnsafeCSS(theme: "light" | "dark"): string {
 
 [data-file-info] {
   font-family: var(--font-chat-code-family) !important;
+  font-size: var(--app-font-size-chat-code, 11px) !important;
   background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
   border-block-color: var(--border) !important;
   color: var(--foreground) !important;
@@ -124,6 +132,7 @@ function buildDiffPanelUnsafeCSS(theme: "light" | "dark"): string {
 
 [data-title] {
   font-family: var(--font-chat-code-family) !important;
+  font-size: var(--app-font-size-chat-code, 11px) !important;
   cursor: pointer;
   color: ${titleColor} !important;
 }
@@ -224,18 +233,42 @@ export default function DiffPanel({
   const diffSearch = useSearch({ strict: false, select: (search) => parseDiffRouteSearch(search) });
   const diffOpen = panelState ? panelState.panel === "diff" : diffSearch.diff === "1";
   const activeThreadId = controlledThreadId ?? routeThreadId;
-  const activeThread = useStore(
+  const serverThread = useStore(
     useMemo(() => createThreadSelector(activeThreadId), [activeThreadId]),
   );
-  const activeProjectId = activeThread?.projectId ?? null;
+  const draftThread = useComposerDraftStore((store) =>
+    activeThreadId ? (store.draftThreadsByThreadId[activeThreadId] ?? null) : null,
+  );
+  const fallbackDraftProjectId = draftThread?.projectId ?? null;
+  const fallbackDraftProject = useStore(
+    useMemo(() => createProjectSelector(fallbackDraftProjectId), [fallbackDraftProjectId]),
+  );
+  // Keep diff summary access available for draft chats before the first turn promotes them into the server store.
+  const activeThread = useMemo(
+    () =>
+      resolveDiffPanelThread({
+        threadId: activeThreadId,
+        serverThread,
+        draftThread,
+        fallbackModelSelection: fallbackDraftProject?.defaultModelSelection ?? null,
+      }),
+    [activeThreadId, draftThread, fallbackDraftProject?.defaultModelSelection, serverThread],
+  );
+  const activeProjectId = activeThread?.projectId ?? draftThread?.projectId ?? null;
   const activeProject = useStore(
     useMemo(() => createProjectSelector(activeProjectId), [activeProjectId]),
   );
-  const activeCwd = resolveThreadWorkspaceCwd({
+  const resolvedThreadEnvMode =
+    serverThread?.envMode ?? draftThread?.envMode ?? activeThread?.envMode;
+  const resolvedThreadWorktreePath =
+    serverThread?.worktreePath ?? draftThread?.worktreePath ?? activeThread?.worktreePath ?? null;
+  const diffEnvironmentState = resolveDiffEnvironmentState({
     projectCwd: activeProject?.cwd ?? null,
-    envMode: activeThread?.envMode,
-    worktreePath: activeThread?.worktreePath ?? null,
+    envMode: resolvedThreadEnvMode,
+    worktreePath: resolvedThreadWorktreePath,
   });
+  const diffEnvironmentPending = diffEnvironmentState.pending;
+  const activeCwd = diffEnvironmentState.cwd;
   const gitBranchesQuery = useQuery(gitBranchesQueryOptions(activeCwd ?? null));
   const isGitRepo = gitBranchesQuery.data?.isRepo ?? true;
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
@@ -320,7 +353,7 @@ export default function DiffPanel({
       fromTurnCount: activeCheckpointRange?.fromTurnCount ?? null,
       toTurnCount: activeCheckpointRange?.toTurnCount ?? null,
       cacheScope: selectedTurn ? `turn:${selectedTurn.turnId}` : conversationCacheScope,
-      enabled: isGitRepo,
+      enabled: isGitRepo && !diffEnvironmentPending,
     }),
   );
   const selectedTurnCheckpointDiff = selectedTurn
@@ -344,7 +377,7 @@ export default function DiffPanel({
   const workingTreeDiffQuery = useQuery(
     gitWorkingTreeDiffQueryOptions({
       cwd: activeCwd ?? null,
-      enabled: diffOpen && surfaceMode !== "review",
+      enabled: diffOpen && surfaceMode !== "review" && !diffEnvironmentPending,
     }),
   );
   const workingTreePatch = workingTreeDiffQuery.data?.patch;
@@ -464,12 +497,18 @@ export default function DiffPanel({
         ? "Failed to generate diff summary."
         : null;
   const canShowSummary = Boolean(
-    activeCwd && (!hasResolvedWorkingTreePatch || !hasNoWorkingTreeChanges),
+    !diffEnvironmentPending &&
+    activeCwd &&
+    (!hasResolvedWorkingTreePatch || !hasNoWorkingTreeChanges),
   );
   const canPrefetchSummary = Boolean(
-    diffOpen && activeCwd && normalizedWorkingTreePatch && !hasNoWorkingTreeChanges,
+    diffOpen &&
+    !diffEnvironmentPending &&
+    activeCwd &&
+    normalizedWorkingTreePatch &&
+    !hasNoWorkingTreeChanges,
   );
-  const canShowTotal = Boolean(activeCwd);
+  const canShowTotal = Boolean(!diffEnvironmentPending && activeCwd);
 
   useEffect(() => {
     if (!canPrefetchSummary) {
@@ -769,6 +808,11 @@ export default function DiffPanel({
       ) : !isGitRepo ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Turn diffs are unavailable because this project is not a git repository.
+        </div>
+      ) : diffEnvironmentPending ? (
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+          This chat environment is still being prepared. Diff and summary will be available once the
+          worktree is ready.
         </div>
       ) : (
         <>
