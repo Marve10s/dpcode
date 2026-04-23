@@ -84,17 +84,24 @@ export function getRuntimeAwareModelCapabilities(input: {
       ? staticDefaultEffort
       : null);
 
-  const reasoningEffortLevels: EffortOption[] = runtimeEfforts.map((effort) => ({
+  const runtimeOptions: EffortOption[] = runtimeEfforts.map((effort) => ({
     value: effort.value,
-    label: runtimeEffortLabel(effort.value),
-    ...(trimOrNull(effort.description ?? effort.label)
-      ? { description: trimOrNull(effort.description ?? effort.label) ?? undefined }
+    label: trimOrNull(effort.label) ?? runtimeEffortLabel(effort.value),
+    ...(trimOrNull(effort.description)
+      ? { description: trimOrNull(effort.description) ?? undefined }
       : {}),
     ...(effort.value === runtimeDefaultEffort ? { isDefault: true as const } : {}),
   }));
 
+  if (input.provider === "opencode") {
+    return {
+      ...staticCapabilities,
+      variantOptions: runtimeOptions,
+    };
+  }
+
   return {
     ...staticCapabilities,
-    reasoningEffortLevels,
+    reasoningEffortLevels: runtimeOptions,
   };
 }
