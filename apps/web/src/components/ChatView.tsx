@@ -393,6 +393,53 @@ type ComposerPluginSuggestion = {
 };
 
 const EMPTY_COMPOSER_PLUGIN_SUGGESTIONS: ComposerPluginSuggestion[] = [];
+const IMAGEN_MODEL_SLUG = "imagen";
+const IMAGEN_SKILL_NAME = "codex-imagen";
+const IMAGEN_MODEL_OPTION = {
+  slug: IMAGEN_MODEL_SLUG,
+  name: "Imagen",
+  isCustom: false,
+} satisfies ProviderModelOption & { isCustom: false };
+
+function isCodexImagenModel(provider: ProviderKind, model: string | null | undefined): boolean {
+  return provider === "codex" && model === IMAGEN_MODEL_SLUG;
+}
+
+function resolveImagenModelSelectionForDispatch(input: {
+  provider: ProviderKind;
+  model: string | null | undefined;
+  modelSelection: ModelSelection;
+}): ModelSelection {
+  if (!isCodexImagenModel(input.provider, input.model)) {
+    return input.modelSelection;
+  }
+  return {
+    ...input.modelSelection,
+    model: DEFAULT_MODEL_BY_PROVIDER.codex,
+  };
+}
+
+function buildImagenSkillPrompt(prompt: string): string {
+  const trimmed = prompt.trim();
+  return trimmed.length > 0 ? `$${IMAGEN_SKILL_NAME} ${trimmed}` : `$${IMAGEN_SKILL_NAME}`;
+}
+
+function resolveImagenSkillReference(
+  skills: ReadonlyArray<ProviderSkillDescriptor>,
+): ProviderSkillReference | null {
+  const skill = skills.find((entry) => entry.name === IMAGEN_SKILL_NAME && entry.enabled);
+  return skill ? { name: skill.name, path: skill.path } : null;
+}
+
+function appendUniqueSkillReference(
+  skills: ReadonlyArray<ProviderSkillReference>,
+  skill: ProviderSkillReference | null,
+): ProviderSkillReference[] {
+  if (!skill || skills.some((entry) => entry.name === skill.name && entry.path === skill.path)) {
+    return [...skills];
+  }
+  return [...skills, skill];
+}
 
 function formatOutgoingPrompt(params: {
   provider: ProviderKind;
@@ -1292,12 +1339,15 @@ export default function ChatView({
   const codexDynamicAgentsQuery = useQuery(providerAgentsQueryOptions({ provider: "codex" }));
   const openCodeDynamicAgentsQuery = useQuery(providerAgentsQueryOptions({ provider: "opencode" }));
   const modelOptionsByProvider = useMemo(() => {
+    const codexModelOptions = getAppModelOptions(
+      "codex",
+      customModelsByProvider.codex,
+      composerModelHintByProvider.codex,
+    );
     const staticOptions: Record<ProviderKind, ReturnType<typeof getAppModelOptions>> = {
-      codex: getAppModelOptions(
-        "codex",
-        customModelsByProvider.codex,
-        composerModelHintByProvider.codex,
-      ),
+      codex: codexModelOptions.some((option) => option.slug === IMAGEN_MODEL_SLUG)
+        ? codexModelOptions
+        : [IMAGEN_MODEL_OPTION, ...codexModelOptions],
       claudeAgent: getAppModelOptions(
         "claudeAgent",
         customModelsByProvider.claudeAgent,
@@ -1363,6 +1413,7 @@ export default function ChatView({
     customModelsByProvider,
     availableModelOptionsByProvider: modelOptionsByProvider,
   });
+  const isImagenComposerMode = isCodexImagenModel(selectedProvider, selectedModel);
   const runtimeModelsByProvider = useMemo(
     () => ({
       claudeAgent: claudeDynamicModelsQuery.data?.models ?? [],
@@ -2023,7 +2074,7 @@ export default function ChatView({
       threadId,
       query: skillTriggerQuery,
       enabled:
-        isSkillTrigger &&
+        (isSkillTrigger || isImagenComposerMode) &&
         supportsSkillDiscovery(providerComposerCapabilitiesQuery.data) &&
         composerSkillCwd !== null,
     }),
@@ -4676,6 +4727,18 @@ export default function ChatView({
     const selectedPromptEffortForSend =
       queuedChatTurn?.selectedPromptEffort ?? selectedPromptEffort;
     const selectedModelSelectionForSend = queuedChatTurn?.modelSelection ?? selectedModelSelection;
+    const isImagenSend = isCodexImagenModel(selectedProviderForSend, selectedModelForSend);
+    const selectedModelSelectionForDispatch = resolveImagenModelSelectionForDispatch({
+      provider: selectedProviderForSend,
+      model: selectedModelForSend,
+      modelSelection: selectedModelSelectionForSend,
+    });
+    const selectedComposerSkillsForDispatch = isImagenSend
+      ? appendUniqueSkillReference(
+          selectedComposerSkillsForSend,
+          resolveImagenSkillReference(providerSkills),
+        )
+      : selectedComposerSkillsForSend;
     const providerOptionsForDispatchForSend =
       queuedChatTurn?.providerOptionsForDispatch ?? providerOptionsForDispatch;
     const runtimeModeForSend = queuedChatTurn?.runtimeMode ?? runtimeMode;
@@ -4818,7 +4881,7 @@ export default function ChatView({
         images: queuedImagesForPersistence,
         assistantSelections: composerAssistantSelectionsForSend,
         terminalContexts: sendableComposerTerminalContexts,
-        skills: selectedComposerSkillsForSend,
+        skills: selectedComposerSkillsForDispatch,
         mentions: selectedComposerMentionsForSend,
         selectedProvider: selectedProviderForSend,
         selectedModel: selectedModelForSend,
@@ -4948,7 +5011,7 @@ export default function ChatView({
     const composerImagesSnapshot = [...composerImagesForSend];
     const composerAssistantSelectionsSnapshot = [...composerAssistantSelectionsForSend];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-    const composerSkillsSnapshot = [...selectedComposerSkillsForSend];
+    const composerSkillsSnapshot = [...selectedComposerSkillsForDispatch];
     const composerMentionsSnapshot = [...selectedComposerMentionsForSend];
     const messageTextForSend = appendTerminalContextsToPrompt(
       appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
@@ -4956,13 +5019,16 @@ export default function ChatView({
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
-    const outgoingMessageText = formatOutgoingPrompt({
+    const baseOutgoingMessageText = formatOutgoingPrompt({
       provider: selectedProviderForSend,
-      model: selectedModelForSend,
+      model: selectedModelSelectionForDispatch.model,
       effort: selectedPromptEffortForSend,
       text: messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT,
     });
-    const mentionedSkillsForSend = selectedComposerSkillsForSend.filter((skill) =>
+    const outgoingMessageText = isImagenSend
+      ? buildImagenSkillPrompt(baseOutgoingMessageText)
+      : baseOutgoingMessageText;
+    const mentionedSkillsForSend = selectedComposerSkillsForDispatch.filter((skill) =>
       promptIncludesSkillMention(outgoingMessageText, skill.name, selectedProviderForSend),
     );
     const mentionedPluginMentionsForSend = resolvePromptPluginMentions({
@@ -5095,11 +5161,11 @@ export default function ChatView({
       // Keep the optimistic label short while the server asks Codex for a better summary.
       const title = buildPromptThreadTitleFallback(titleSeed);
       const threadCreateModelSelection: ModelSelection = buildModelSelection(
-        selectedProviderForSend,
-        selectedModelForSend ||
+        selectedModelSelectionForDispatch.provider,
+        selectedModelSelectionForDispatch.model ||
           targetProjectDefaultModelSelectionForSend?.model ||
           DEFAULT_MODEL_BY_PROVIDER.codex,
-        selectedModelSelectionForSend.options,
+        selectedModelSelectionForDispatch.options,
       );
 
       if (isLocalDraftThread) {
@@ -5158,7 +5224,7 @@ export default function ChatView({
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
-          modelSelection: selectedModelSelectionForSend,
+          modelSelection: selectedModelSelectionForDispatch,
           runtimeMode: nextRuntimeModeForSend,
           interactionMode: interactionModeForSend,
         });
@@ -5180,7 +5246,7 @@ export default function ChatView({
             ? { mentions: mentionedPluginMentionsForSend }
             : {}),
         },
-        modelSelection: selectedModelSelectionForSend,
+        modelSelection: selectedModelSelectionForDispatch,
         ...(providerOptionsForDispatchForSend
           ? { providerOptions: providerOptionsForDispatchForSend }
           : {}),
@@ -6964,10 +7030,12 @@ export default function ChatView({
                       : showPlanFollowUpPrompt && activeProposedPlan
                         ? "Add feedback to refine the plan, or leave this blank to implement it"
                         : hasLiveTurn
-                          ? "Ask for follow-up changes"
-                          : phase === "disconnected"
-                            ? "Ask for follow-up changes or attach images"
-                            : "Ask anything, @tag files/folders, or use / to show available commands"
+                            ? "Ask for follow-up changes"
+                            : phase === "disconnected"
+                              ? "Ask for follow-up changes or attach images"
+                              : isImagenComposerMode
+                                ? "Describe the image you want to generate"
+                                : "Ask anything, @tag files/folders, or use / to show available commands"
                 }
                 disabled={isConnecting || isComposerApprovalState}
               />
@@ -7700,7 +7768,9 @@ export default function ChatView({
                                       ? "Ask for follow-up changes"
                                       : phase === "disconnected"
                                         ? "Ask for follow-up changes or attach images"
-                                        : "Ask anything, @tag files/folders, or use / to show available commands"
+                                        : isImagenComposerMode
+                                          ? "Describe the image you want to generate"
+                                          : "Ask anything, @tag files/folders, or use / to show available commands"
                             }
                             disabled={isConnecting || isComposerApprovalState}
                           />
