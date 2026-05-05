@@ -58,6 +58,8 @@ import {
 import { extractProposedPlanMarkdown, withProviderPlanModePrompt } from "../planMode.ts";
 
 const PROVIDER = "opencode" as const;
+const OPENCODE_BUILD_AGENT = "build";
+const OPENCODE_PLAN_AGENT = "plan";
 
 type OpenCodeSubscribedEvent =
   Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>> extends {
@@ -1907,7 +1909,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           });
         }
 
-        const agent =
+        const selectedAgent =
           input.modelSelection?.provider === PROVIDER
             ? input.modelSelection.options?.agent
             : undefined;
@@ -1915,10 +1917,13 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           input.modelSelection?.provider === PROVIDER
             ? input.modelSelection.options?.variant
             : undefined;
+        const agent =
+          selectedAgent ??
+          (input.interactionMode === "plan" ? OPENCODE_PLAN_AGENT : OPENCODE_BUILD_AGENT);
 
         context.activeTurnId = turnId;
         context.activeInteractionMode = input.interactionMode === "plan" ? "plan" : "default";
-        context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+        context.activeAgent = agent;
         context.activeVariant = variant;
         updateProviderSession(
           context,
